@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<robot name="workspace" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- Pull in the UR macro (contains UR3/5/10/16 including e-series) -->
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+
+  <!-- Root -->
+  <link name="world">
+    <!-- optional: draw a tiny axis -->
+    <visual>
+      <origin xyz="0 0 0"/>
+      <geometry><sphere radius="0.01"/></geometry>
+      <material name="world_mat"><color rgba="1 1 1 1"/></material>
+    </visual>
+  </link>
+
+  <!-- Camera base frame that matches RealSense 'camera_link' -->
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0"/>
+      <geometry><box size="0.05 0.05 0.02"/></geometry>
+      <material name="cam"><color rgba="0.2 0.6 1.0 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="world_to_camera" type="fixed">
+    <parent link="world"/>
+    <child link="camera_link"/>
+    <origin xyz="0.0 1.0 0.20" rpy="0 0 -1.5708"/>
+  </joint>
+
+  <!-- Robots -->
+
+  <!-- import main macro -->
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+
+  <!-- parameters -->
+  <xacro:arg name="joint_limit_params" default="$(find ur_description)/config/ur5e/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_params" default="$(find ur_description)/config/ur5e/default_kinematics.yaml"/>
+  <xacro:arg name="physical_params" default="$(find ur_description)/config/ur5e/physical_parameters.yaml"/>
+  <xacro:arg name="visual_params" default="$(find ur_description)/config/ur5e/visual_parameters.yaml"/>
+
+  <xacro:ur_robot
+      name="left_ur5e"
+      tf_prefix="left_"
+      parent="world"
+      joint_limits_parameters_file="$(arg joint_limit_params)"
+      kinematics_parameters_file="$(arg kinematics_params)"
+      physical_parameters_file="$(arg physical_params)"
+      visual_parameters_file="$(arg visual_params)"
+      robot_ip="10.164.8.235">
+    <origin xyz="0.5 -0.2 0" rpy="0 0 0" />
+  </xacro:ur_robot>
+
+  <xacro:ur_robot
+      name="right_ur5e"
+      tf_prefix="right_"
+      parent="world"
+      joint_limits_parameters_file="$(arg joint_limit_params)"
+      kinematics_parameters_file="$(arg kinematics_params)"
+      physical_parameters_file="$(arg physical_params)"
+      visual_parameters_file="$(arg visual_params)"
+      robot_ip="10.164.8.222">
+    <origin xyz="-0.5 -0.2 0" rpy="0 0 0" />
+  </xacro:ur_robot>
+
+</robot>

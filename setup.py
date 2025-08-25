@@ -14,6 +14,8 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         # include config and launch files
+        (os.path.join('share', package_name, 'urdf'),
+         glob(os.path.join('urdf', '*'))),
         (os.path.join('share', package_name, 'config'),
          glob(os.path.join('config', '*'))),
         (os.path.join('share', package_name, 'launch'),
@@ -29,7 +31,8 @@ setup(
     entry_points={
         'console_scripts': [
             'goc_demo_node = goc_demo.goc_demo_node:main',
-            'tracker_node = goc_demo.keypoint_tracker_node:main'
+            'tracker_node = goc_demo.keypoint_tracker_node:main',
+            'demo_world_node = goc_demo.demo_world_node:main',
         ],
     },
 )
