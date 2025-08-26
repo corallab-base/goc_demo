@@ -3,6 +3,27 @@
 
   <!-- Pull in the UR macro (contains UR3/5/10/16 including e-series) -->
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <!-- Fro control tag -->
+  <xacro:include filename="$(find ur_description)/urdf/ur.ros2_control.xacro"/>
+
+  <!-- parameters -->
+  <xacro:arg name="joint_limit_params" default="$(find ur_description)/config/ur5e/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_params" default="$(find ur_description)/config/ur5e/default_kinematics.yaml"/>
+  <xacro:arg name="physical_params" default="$(find ur_description)/config/ur5e/physical_parameters.yaml"/>
+  <xacro:arg name="visual_params" default="$(find ur_description)/config/ur5e/visual_parameters.yaml"/>
+  <xacro:arg name="ur_script_filename" default="$(find ur_client_library)/resources/external_control.urscript"/>
+  <xacro:arg name="ur_output_recipe_filename" default="$(find ur_robot_driver)/resources/rtde_output_recipe.txt"/>
+  <xacro:arg name="ur_input_recipe_filename" default="$(find ur_robot_driver)/resources/rtde_input_recipe.txt"/>
+
+  <!-- initial position for simulations (Fake Hardware, Gazebo, Ignition) -->
+  <xacro:arg name="initial_positions_file" default="$(find ur_description)/config/initial_positions.yaml"/>
+
+  <xacro:arg name="script_filename" default="$(find ur_client_library)/resources/external_control.urscript"/>
+  <xacro:arg name="input_recipe_filename" default="$(find ur_robot_driver)/resources/rtde_input_recipe.txt"/>
+  <xacro:arg name="output_recipe_filename" default="$(find ur_robot_driver)/resources/rtde_output_recipe.txt"/>
+
+  <!-- convert to property to use substitution in function -->
+  <xacro:property name="initial_positions_file" default="$(arg initial_positions_file)"/>
 
   <!-- Root -->
   <link name="world">
@@ -30,15 +51,6 @@
 
   <!-- Robots -->
 
-  <!-- import main macro -->
-  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
-
-  <!-- parameters -->
-  <xacro:arg name="joint_limit_params" default="$(find ur_description)/config/ur5e/joint_limits.yaml"/>
-  <xacro:arg name="kinematics_params" default="$(find ur_description)/config/ur5e/default_kinematics.yaml"/>
-  <xacro:arg name="physical_params" default="$(find ur_description)/config/ur5e/physical_parameters.yaml"/>
-  <xacro:arg name="visual_params" default="$(find ur_description)/config/ur5e/visual_parameters.yaml"/>
-
   <xacro:ur_robot
       name="left_ur5e"
       tf_prefix="left_"
@@ -47,8 +59,17 @@
       kinematics_parameters_file="$(arg kinematics_params)"
       physical_parameters_file="$(arg physical_params)"
       visual_parameters_file="$(arg visual_params)"
-      robot_ip="10.164.8.235">
-    <origin xyz="0.5 -0.2 0" rpy="0 0 0" />
+      initial_positions="${xacro.load_yaml(initial_positions_file)}"
+      robot_ip="10.164.8.235"
+      reverse_ip="0.0.0.0"
+      script_filename="$(arg script_filename)"
+      output_recipe_filename="$(arg output_recipe_filename)"
+      input_recipe_filename="$(arg input_recipe_filename)"
+      script_command_port="50004"
+      reverse_port="50001"
+      script_sender_port="50002"
+      trajectory_port="50003">
+    <origin xyz="0.25 -0.4 0" rpy="0 0 1.5708" />
   </xacro:ur_robot>
 
   <xacro:ur_robot
@@ -59,8 +80,17 @@
       kinematics_parameters_file="$(arg kinematics_params)"
       physical_parameters_file="$(arg physical_params)"
       visual_parameters_file="$(arg visual_params)"
-      robot_ip="10.164.8.222">
-    <origin xyz="-0.5 -0.2 0" rpy="0 0 0" />
+      initial_positions="${xacro.load_yaml(initial_positions_file)}"
+      robot_ip="10.164.8.222"
+      reverse_ip="0.0.0.0"
+      script_filename="$(arg script_filename)"
+      output_recipe_filename="$(arg output_recipe_filename)"
+      input_recipe_filename="$(arg input_recipe_filename)"
+      script_command_port="50008"
+      reverse_port="50005"
+      script_sender_port="50006"
+      trajectory_port="50007">
+    <origin xyz="-0.25 -0.4 0" rpy="0 0 1.5708" />
   </xacro:ur_robot>
 
 </robot>
