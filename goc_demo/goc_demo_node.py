@@ -10,7 +10,7 @@ from rclpy.duration import Duration
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from rclpy.action import ActionClient
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, PointCloud
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from builtin_interfaces.msg import Duration as RosDuration
@@ -48,6 +48,7 @@ class GocMpcFollowJTNode(Node):
             ],
         )
         self.declare_parameter("joint_state_topic", "/joint_states")
+        self.declare_parameter("keypoints_topic", "/demo_world_node/centroids_world")
         self.declare_parameter("rate_hz", 30.0)
         self.declare_parameter("mpc_output_mode", "position")  # or "velocity"
         self.declare_parameter("preview_points", 1)            # 1 is fine for most
@@ -57,6 +58,7 @@ class GocMpcFollowJTNode(Node):
 
         # Read params
         self._joint_state_topic: str = self.get_parameter("joint_state_topic").value
+        self._keypoints_topic: str = self.get_parameter("keypoints_topic").value
         self._rate_hz: float = float(self.get_parameter("rate_hz").value)
         self._joints: List[str] = list(self.get_parameter("joints").value)
         self._preview_points: int = int(self.get_parameter("preview_points").value)
@@ -77,9 +79,18 @@ class GocMpcFollowJTNode(Node):
             depth=10,
         )
 
+        keypoints_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+
         # --- Subscriptions ---
         self._latest_js: Optional[JointState] = None
         self.create_subscription(JointState, self._joint_state_topic, self._on_joint_state, js_qos)
+
+        self._latest_keypoints: np.ndarray = np.zeros((0, 3))
+        self.create_subscription(PointCloud, self._keypoints_topic, self._on_keypoints, keypoints_qos)
 
         # --- Action client ---
         controller_name = self.get_parameter("left_controller_name").value + "/follow_joint_trajectory"
@@ -95,6 +106,7 @@ class GocMpcFollowJTNode(Node):
         self.get_logger().info(f"Action server on {controller_name} is ready")
 
         # --- Controller (replace with your real object) ---
+        self.n_keypoints = 0
         self.goc_mpc = self._setup_goc_mpc()
 
         # --- Timing ---
@@ -113,7 +125,7 @@ class GocMpcFollowJTNode(Node):
         # , "ur5e_1"
 
         # env and visualization
-        env = SimpleDrakeGym(["ur5e_0", "ur5e_1"], [])
+        env = SimpleDrakeGym(["ur5e_0", "ur5e_1"], ["cube_0"])
 
         # see if this can be improved
         state_lower_bound = -100.0
@@ -121,7 +133,7 @@ class GocMpcFollowJTNode(Node):
 
         symbolic_plant = env.plant.ToSymbolic()
 
-        graph = GraphOfConstraints(symbolic_plant, ["ur5e_0", "ur5e_1"], [],
+        graph = GraphOfConstraints(symbolic_plant, ["ur5e_0", "ur5e_1"], ["cube_0"],
                                    state_lower_bound, state_upper_bound)
 
         graph.structure.add_nodes(2)
@@ -130,8 +142,16 @@ class GocMpcFollowJTNode(Node):
         goal_position_1 = np.array([-1.57, -1.57, 1.34, -1.34, -1.57, 0.0, -1.57, -1.57, 1.34, -1.34, -1.57, 0.0])
         goal_position_2 = np.array([-1.00, -2.00, 2.00, -2.00, -2.00, 0.0, -1.57, -1.57, 1.34, -1.34, -1.57, 0.0])
 
-        graph.add_linear_eq(0, np.eye(graph.total_dim), goal_position_1)
-        graph.add_linear_eq(1, np.eye(graph.total_dim), goal_position_2)
+        joint_agent_dim = graph.num_agents * graph.dim;
+
+        phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+        graph.add_grasp_change(phi0, "grab", 0, 0);
+
+        phi1 = graph.add_agents_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
+        graph.add_grasp_change(phi1, "release", 0, 0);
+
+        # save intended number of keypoints
+        self.n_keypoints = graph.num_objects
 
         # GoC-MPC
         goc_mpc = GraphOfConstraintsMPC(graph,
@@ -145,7 +165,10 @@ class GocMpcFollowJTNode(Node):
     def _on_joint_state(self, msg: JointState):
         self._latest_js = msg
 
-    def _extract_state(self, js: JointState) -> Tuple[np.ndarray, np.ndarray]:
+    def _on_keypoints(self, msg: PointCloud):
+        self._latest_keypoints = np.array([(p.x, p.y, p.z) for p in msg.points])
+
+    def _extract_state(self, js: JointState, kps: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         # Reorder according to self._joints
         name_to_idx = {n: i for i, n in enumerate(js.name)}
         idxs = []
@@ -153,19 +176,27 @@ class GocMpcFollowJTNode(Node):
             if j not in name_to_idx:
                 raise KeyError(f"Joint '{j}' not in JointState: {js.name}")
             idxs.append(name_to_idx[j])
-        x = np.asarray(js.position, dtype=float)[idxs]
-        x_dot = np.asarray(js.velocity, dtype=float)[idxs]
+        robot_x = np.asarray(js.position, dtype=float)[idxs]
+        kp_x = kps[:self.n_keypoints].flatten()
+        robot_x_dot = np.asarray(js.velocity, dtype=float)[idxs]
+        kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
+
+        # x, x_dot
+        x = np.concatenate((robot_x, kp_x))
+        x_dot = np.concatenate((robot_x_dot, kp_x_dot))
         return x, x_dot
 
     def _on_timer(self):
         if self._latest_js is None:
+            return
+        if self._latest_keypoints is None:
             return
 
         now = self.get_clock().now()
         t = (now - self._start_time).nanoseconds * 1e-9
 
         try:
-            x, x_dot = self._extract_state(self._latest_js)
+            x, x_dot = self._extract_state(self._latest_js, self._latest_keypoints)
         except Exception as e:
             self.get_logger().warn(f"Bad JointState: {e}")
             return
@@ -211,7 +242,7 @@ class GocMpcFollowJTNode(Node):
                 # Interpret u as absolute desired positions at t+dt
                 p_j.positions = agent_xi_h[j].tolist()
                 p_j.velocities = agent_vels[j].tolist()
-                p_j.time_from_start = RosDuration(sec=int(ts[j]), nanosec=int((ts[j] /  % 1.0) * 1e9))
+                p_j.time_from_start = RosDuration(sec=int(ts[j]), nanosec=int((ts[j] % 1.0) * 1e9))
                 traj.points.append(p_j)
 
         return left_traj, right_traj
