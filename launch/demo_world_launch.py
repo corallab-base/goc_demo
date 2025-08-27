@@ -134,7 +134,7 @@ def make_dual_ur5e_launch_items(robot_description):
 
     # , "right_"
 
-    for i, prefix in enumerate(["left_"]):
+    for i, prefix in enumerate(["left_", "right_"]):
         declared_arguments.append(
             DeclareLaunchArgument(
                 prefix+"robot_ip",
@@ -201,9 +201,9 @@ def make_dual_ur5e_launch_items(robot_description):
             prefix+"force_torque_sensor_broadcaster",
             prefix+"tcp_pose_broadcaster",
             prefix+"ur_configuration_controller",
+            prefix+"scaled_joint_trajectory_controller",
         ]
         controllers_inactive = [
-            prefix+"scaled_joint_trajectory_controller",
             prefix+"joint_trajectory_controller",
             prefix+"forward_velocity_controller",
             prefix+"forward_position_controller",
@@ -212,11 +212,6 @@ def make_dual_ur5e_launch_items(robot_description):
             prefix+"freedrive_mode_controller",
             prefix+"tool_contact_controller",
         ]
-        # if activate_joint_controller.perform(context) == "true":
-        #     controllers_active.append(initial_joint_controller.perform(context))
-        #     controllers_inactive.remove(initial_joint_controller.perform(context))
-        # if use_fake_hardware.perform(context) == "true":
-        #     controllers_active.remove("tcp_pose_broadcaster")
         controller_spawners = [
             controller_spawner(controllers_active),
             controller_spawner(controllers_inactive, active=False),
@@ -250,21 +245,21 @@ def generate_launch_description():
         parameters=[robot_description],
     )
 
-    # demo = Node(
-    #     package='goc_demo',
-    #     executable='demo_world_node',  # or `python3 demo_world_node.py`
-    #     name='demo_world_node',
-    #     parameters=[{
-    #         'world_frame': 'world',
-    #         'camera_frame': 'camera_color_optical_frame',
-    #         'centroids_px_topic': '/sam2_click_tracker_node/centroids_px',
-    #         'centroids_3d_topic': '/sam2_click_tracker_node/centroids_3d',
-    #         'depth_topic': '/camera/camera/aligned_depth_to_color/image_raw',
-    #         'camera_info_topic': '/camera/camera/color/camera_info',
-    #         'publish_markers': True,
-    #     }],
-    #     output='screen',
-    # )
+    demo = Node(
+        package='goc_demo',
+        executable='demo_world_node',
+        name='demo_world_node',
+        parameters=[{
+            'world_frame': 'world',
+            'camera_frame': 'camera_color_optical_frame',
+            'centroids_px_topic': '/sam2_click_tracker_node/centroids_px',
+            'centroids_3d_topic': '/sam2_click_tracker_node/centroids_3d',
+            'depth_topic': '/camera/camera/aligned_depth_to_color/image_raw',
+            'camera_info_topic': '/camera/camera/color/camera_info',
+            'publish_markers': True,
+        }],
+        output='screen',
+    )
 
     robot_launch_items = make_dual_ur5e_launch_items(robot_description)
 
@@ -281,6 +276,4 @@ def generate_launch_description():
         condition=IfCondition(launch_rviz)
     )
 
-    # demo
-
-    return LaunchDescription(declared_arguments + [rsp, robot_launch_items, rviz])
+    return LaunchDescription(declared_arguments + [rsp, demo, robot_launch_items, rviz])
