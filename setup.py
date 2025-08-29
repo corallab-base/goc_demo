@@ -31,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'goc_demo_node = goc_demo.goc_demo_node:main',
+            'goc_cartesian_demo_node = goc_demo.goc_cartesian_demo_node:main',
             'tracker_node = goc_demo.keypoint_tracker_node:main',
             'demo_world_node = goc_demo.demo_world_node:main',
         ],

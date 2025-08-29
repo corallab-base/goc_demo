@@ -105,6 +105,12 @@ def make_dual_ur5e_launch_items(robot_description):
     ur_control_node = Node(
         package="ur_robot_driver",
         executable="ur_ros2_control_node",
+        remappings=[
+            ("left_motion_control_handle/target_frame", "left_target_frame"),
+            ("left_cartesian_motion_controller/target_frame", "left_target_frame"),
+            ("right_motion_control_handle/target_frame", "right_target_frame"),
+            ("right_cartesian_motion_controller/target_frame", "right_target_frame"),
+        ],
         parameters=[
             robot_description,
             update_rate_config_file,
@@ -113,6 +119,7 @@ def make_dual_ur5e_launch_items(robot_description):
             ParameterFile(left_params_file, allow_substs=True),
             ParameterFile(right_params_file, allow_substs=True),
         ],
+        # prefix=['gdbserver localhost:7000'],
         output="screen",
     )
 
@@ -148,7 +155,7 @@ def make_dual_ur5e_launch_items(robot_description):
         dashboard_client_node = Node(
             package="ur_robot_driver",
             executable="dashboard_client",
-            name="dashboard_client",
+            name=prefix+"dashboard_client",
             output="screen",
             emulate_tty=True,
             parameters=[{"robot_ip": robot_ip}],
@@ -157,7 +164,7 @@ def make_dual_ur5e_launch_items(robot_description):
         robot_state_helper_node = Node(
             package="ur_robot_driver",
             executable="robot_state_helper",
-            name="ur_robot_state_helper",
+            name=prefix+"ur_robot_state_helper",
             output="screen",
             parameters=[
                 {"headless_mode": headless_mode},
@@ -168,6 +175,7 @@ def make_dual_ur5e_launch_items(robot_description):
         urscript_interface = Node(
             package="ur_robot_driver",
             executable="urscript_interface",
+            name=prefix+"urscript_interface",
             parameters=[{"robot_ip": robot_ip}],
             output="screen",
         )
@@ -175,7 +183,7 @@ def make_dual_ur5e_launch_items(robot_description):
         controller_stopper_node = Node(
             package="ur_robot_driver",
             executable="controller_stopper_node",
-            name="controller_stopper",
+            name=prefix+"controller_stopper",
             output="screen",
             emulate_tty=True,
             parameters=[
@@ -201,16 +209,20 @@ def make_dual_ur5e_launch_items(robot_description):
             prefix+"force_torque_sensor_broadcaster",
             prefix+"tcp_pose_broadcaster",
             prefix+"ur_configuration_controller",
-            prefix+"scaled_joint_trajectory_controller",
+            prefix+"cartesian_motion_controller",
         ]
         controllers_inactive = [
+            prefix+"motion_control_handle",
             prefix+"joint_trajectory_controller",
+            prefix+"scaled_joint_trajectory_controller",
             prefix+"forward_velocity_controller",
             prefix+"forward_position_controller",
             prefix+"force_mode_controller",
             prefix+"passthrough_trajectory_controller",
             prefix+"freedrive_mode_controller",
             prefix+"tool_contact_controller",
+            prefix+"cartesian_compliance_controller",
+            prefix+"cartesian_force_controller",
         ]
         controller_spawners = [
             controller_spawner(controllers_active),

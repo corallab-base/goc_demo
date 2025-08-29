@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import numpy as np
+from typing import List, Optional, Tuple, Sequence, Union
+
+import rclpy
+from rclpy.node import Node
+from rclpy.duration import Duration
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+
+from rclpy.action import ActionClient
+from sensor_msgs.msg import JointState, PointCloud
+from geometry_msgs.msg import PoseStamped, Pose
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from control_msgs.action import FollowJointTrajectory
+from builtin_interfaces.msg import Duration as RosDuration
+
+from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
+from tf2_geometry_msgs import do_transform_pose  # applies TransformStamped to Pose/PoseStamped
+
+from goc_mpc.splines import Block
+from goc_mpc.goc_mpc import GraphOfConstraints, GraphOfConstraintsMPC
+from goc_mpc.simple_drake_env import SimpleDrakeGym
+
+
+WORLD_FRAME = "world"
+
+
+class GocMpcCartesianNode(Node):
+    """
+    Subscribes to TCP Poses, calls goc_mpc.step(t, x, x_dot), and streams tiny
+    FollowCartesianTrajectory goals to the cartesian_motion_controller.
+    """
+
+    def __init__(self):
+        super().__init__("goc_mpc_cartesian_node")
+        
+        # --- Parameters (your snippet + a couple extra) ---
+        self.declare_parameter("left_pose_topic", "/left_tcp_pose_broadcaster/pose")
+        self.declare_parameter("right_pose_topic", "/right_tcp_pose_broadcaster/pose")
+        self.declare_parameter("keypoints_topic", "/demo_world_node/centroids_world")
+        self.declare_parameter("rate_hz", 30.0)
+        self.declare_parameter("dry_run", False)
+        self.declare_parameter("mpc_output_mode", "position")  # or "velocity"
+        self.declare_parameter("preview_points", 1)            # 1 is fine for most
+        self.declare_parameter("dt_scale", 1.0)                # stretch/shrink dt used in goal points
+        self.declare_parameter("goal_time_tolerance_sec", 0.05)
+        self.declare_parameter("stop_with_zero_velocity", True)
+
+        # Read params
+        self._left_pose_topic: str = self.get_parameter("left_pose_topic").value
+        self._right_pose_topic: str = self.get_parameter("right_pose_topic").value
+        self._keypoints_topic: str = self.get_parameter("keypoints_topic").value
+        self._rate_hz: float = float(self.get_parameter("rate_hz").value)
+        self._preview_points: int = int(self.get_parameter("preview_points").value)
+        self._dt_scale: float = float(self.get_parameter("dt_scale").value)
+        self._goal_time_tol: float = float(self.get_parameter("goal_time_tolerance_sec").value)
+        self._stop_with_zero_velocity: bool = bool(self.get_parameter("stop_with_zero_velocity").value)
+        self._dry_run = bool(self.get_parameter("dry_run").value)
+
+        if self._rate_hz <= 0.0:
+            self.get_logger().warn("rate_hz must be > 0; defaulting to 100.0")
+            self._rate_hz = 100.0
+
+        self._period_sec = 1.0 / self._rate_hz
+
+        # --- TF stuff ---
+        self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+
+        # --- Sub/Pub QoS ---
+        pose_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+
+        keypoints_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+
+        # --- Subscriptions ---
+        self._latest_left_pose: Optional[PoseStamped] = None
+        self.create_subscription(PoseStamped, self._left_pose_topic, self._on_left_pose, pose_qos)
+        self._latest_right_pose: Optional[PoseStamped] = None
+        self.create_subscription(PoseStamped, self._right_pose_topic, self._on_right_pose, pose_qos)
+
+        self._latest_keypoints: np.ndarray = np.zeros((0, 3))
+        self.create_subscription(PointCloud, self._keypoints_topic, self._on_keypoints, keypoints_qos)
+
+        # Publisher to send the target pose to the robot
+        if not self._dry_run:
+            left_target_topic_name = "/left_target_frame"
+            self.left_target_pose_publisher = self.create_publisher(
+                PoseStamped, left_target_topic_name, 10
+            )
+            right_target_topic_name = "/right_target_frame"
+            self.right_target_pose_publisher = self.create_publisher(
+                PoseStamped, right_target_topic_name, 10
+            )
+
+        # --- Controller ---
+        self.n_keypoints = 0
+        self.goc_mpc = self._setup_goc_mpc()
+        self._obs = None
+
+        # --- Timing ---
+        self._start_time = self.get_clock().now()
+        self._timer = self.create_timer(self._period_sec, self._on_timer)
+
+        # Track last goal handle (optional)
+        self._last_goal_handle = None
+
+        self.get_logger().info(
+            f"Streaming pose goals at {self._rate_hz:.1f} Hz"
+        )
+
+    def _setup_goc_mpc(self):
+        # , "ur5e_1"
+
+        # env and visualization
+        self._env = SimpleDrakeGym(["free_body_0", "free_body_1"], [])
+
+        # see if this can be improved
+        state_lower_bound = -100.0
+        state_upper_bound = 100.0
+
+        symbolic_plant = self._env.plant.ToSymbolic()
+
+        graph = GraphOfConstraints(symbolic_plant, ["free_body_0", "free_body_1"], [],
+                                   state_lower_bound, state_upper_bound)
+
+        graph.structure.add_nodes(2)
+        graph.structure.add_edge(0, 1, True)
+
+        # goal_position_11 = np.array([-0.40113339852313007, -0.03349509404906316, 0.32730235489950865])
+        # goal_position_12 = np.array([0.40308290695775584, -0.03316039003577954, 0.3736924707485338])
+        # goal_position_21 = np.array([-0.40113339852313007, -0.03349509404906316, 0.22730235489950865])
+        # goal_position_22 = np.array([0.40308290695775584, -0.03316039003577954, 0.2736924707485338])
+        # phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+
+        # goal_position_1 = np.array([-0.26287660109346594, 0.2382213322711397, 0.5424340611992749, 1.0, 0.0, 0.0, 0.0,
+        #                             -0.1412037429408065, -0.04868852932116686, 0.5430362892168395, 1.0, 0.0, 0.0, 0.0])
+        # phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+
+        goal_position_1 = np.array([-0.40113339852313007, -0.03349509404906316, 0.32730235489950865, 0.0007192738629538007, -0.0021238036272181113, 0.7088539926431737, -0.7053516776878712,
+                                    0.40308290695775584, -0.03316039003577954, 0.3736924707485338, 0.000650165070815199, 0.0011290452852024918, -0.7071217216542918, 0.7070906400927642])
+        goal_position_2 = np.array([-0.40113339852313007, -0.03349509404906316, 0.22730235489950865, 0.0007192738629538007, -0.0021238036272181113, 0.7088539926431737, -0.7053516776878712,
+                                    0.40308290695775584, -0.03316039003577954, 0.2736924707485338, 0.000650165070815199, 0.0011290452852024918, -0.7071217216542918, 0.7070906400927642])
+
+        joint_agent_dim = graph.num_agents * graph.dim;
+
+        phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+        # graph.add_grasp_change(phi0, "grab", 0, 0);
+
+        phi1 = graph.add_agents_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
+        # graph.add_grasp_change(phi1, "release", 0, 0);
+
+        # save intended number of keypoints
+        self.n_keypoints = graph.num_objects
+
+        # GoC-MPC
+        spline_spec = [Block.R(3), Block.SO3()]
+        goc_mpc = GraphOfConstraintsMPC(graph, spline_spec,
+                                        short_path_time_per_step = 0.02)
+                                        # max_vel = 0.05,  # maximum velocity for every joint
+                                        # max_acc = 0.05,  # maximum acceleration for every joint
+                                        # max_jerk = 0.05) # maximum jerk for every joint
+
+        goc_mpc.reset()
+
+        return goc_mpc
+
+    # --- Callbacks ---
+    def _on_left_pose(self, msg: PoseStamped):
+        # msg is in left_base_link; convert to world
+        pw = self._to_world(msg)
+        if pw is not None:
+            self._latest_left_pose = pw
+
+    def _on_right_pose(self, msg: PoseStamped):
+        # msg is in right_base_link; convert to world
+        pw = self._to_world(msg)
+        if pw is not None:
+            self._latest_right_pose = pw
+
+    def _on_keypoints(self, msg: PointCloud):
+        self._latest_keypoints = np.array([(p.x, p.y, p.z) for p in msg.points])
+
+    def _extract_state(self, left_pose: Pose, right_pose: Pose, kps: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+
+        def to_arr(pose: Pose):
+            return np.array([pose.position.x,
+                             pose.position.y,
+                             pose.position.z,
+                             pose.orientation.w,
+                             pose.orientation.x,
+                             pose.orientation.y,
+                             pose.orientation.z])
+
+        # Reorder according to self._joints
+        left_x = to_arr(left_pose)
+        left_x_dot = np.zeros((6,))
+
+        right_x = to_arr(left_pose)
+        right_x_dot = np.zeros((6,))
+
+        kp_x = kps[:self.n_keypoints].flatten()
+        kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
+        
+        # x, x_dot
+        x = np.concatenate((left_x, right_x, kp_x))
+        x_dot = np.concatenate((left_x_dot, right_x_dot, kp_x_dot))
+        return x, x_dot
+
+    def _on_timer(self):
+        if self._latest_left_pose is None:
+            return
+        if self._latest_right_pose is None:
+            return
+        if self._latest_keypoints is None:
+            return
+
+        now = self.get_clock().now()
+        t = (now - self._start_time).nanoseconds * 1e-9
+
+        try:
+            if self._dry_run:
+                if self._obs is None:
+                    self._obs, _ = self._env.reset()
+                    x, x_dot = self._extract_state(self._latest_left_pose, self._latest_right_pose, self._latest_keypoints)
+                    self._env._set_controlled_q(x)
+                    self._env._set_controlled_qdot(x_dot)
+                else:
+                    x, x_dot = self._obs
+            else:
+                x, x_dot = self._extract_state(self._latest_left_pose, self._latest_right_pose, self._latest_keypoints)
+
+        except Exception as e:
+            self.get_logger().warn(f"Bad State: {e}")
+            return
+
+        # MPC step
+        try:
+            xi_h, _, _ = self.goc_mpc.step(t, x, x_dot)
+        except Exception as e:
+            self.get_logger().error(f"goc_mpc.step failed: {e}")
+            return
+
+        self.get_logger().info(f"next waypoints in: {self.goc_mpc.timing_mpc.get_next_taus()}")
+
+        target = 4
+
+        left_target_pose_stamped = PoseStamped()
+        left_target_pose_stamped.header.frame_id = "world"
+        left_target_pose_stamped.header.stamp = self.get_clock().now().to_msg()
+        left_target_pose_stamped.pose.position.x = xi_h[target, 0]
+        left_target_pose_stamped.pose.position.y = xi_h[target, 1]
+        left_target_pose_stamped.pose.position.z = xi_h[target, 2]
+        left_target_pose_stamped.pose.orientation.w = xi_h[target, 3]
+        left_target_pose_stamped.pose.orientation.x = xi_h[target, 4]
+        left_target_pose_stamped.pose.orientation.y = xi_h[target, 5]
+        left_target_pose_stamped.pose.orientation.z = xi_h[target, 6]
+
+        right_target_pose_stamped = PoseStamped()
+        right_target_pose_stamped.header.frame_id = "world"
+        right_target_pose_stamped.header.stamp = self.get_clock().now().to_msg()
+        right_target_pose_stamped.pose.position.x = xi_h[target, 7+0]
+        right_target_pose_stamped.pose.position.y = xi_h[target, 7+1]
+        right_target_pose_stamped.pose.position.z = xi_h[target, 7+2]
+        right_target_pose_stamped.pose.orientation.w = xi_h[target, 7+3]
+        right_target_pose_stamped.pose.orientation.x = xi_h[target, 7+4]
+        right_target_pose_stamped.pose.orientation.y = xi_h[target, 7+5]
+        right_target_pose_stamped.pose.orientation.z = xi_h[target, 7+6]
+
+        if self._dry_run:
+            qpos = xi_h[target]
+            self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
+        else:
+            qpos = xi_h[target]
+            self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
+            self.left_target_pose_publisher.publish(left_target_pose_stamped)
+            self.right_target_pose_publisher.publish(right_target_pose_stamped)
+
+    # --- Helpers ---
+    def _to_world(self, pose_msg: PoseStamped, timeout_sec: float = 0.05) -> Optional[PoseStamped]:
+        """Transform a PoseStamped from its header.frame_id to WORLD_FRAME."""
+        if pose_msg is None:
+            return None
+        src_frame = pose_msg.header.frame_id
+        if not src_frame:
+            self.get_logger().warn("Incoming PoseStamped has empty header.frame_id")
+            return None
+        if src_frame == WORLD_FRAME:
+            return pose_msg  # already in world
+
+        try:
+            # Get transform: target <- source (i.e., world <- src_frame)
+            tf: 'TransformStamped' = self.tf_buffer.lookup_transform(
+                WORLD_FRAME,                # target frame
+                src_frame,                  # source frame
+                pose_msg.header.stamp,      # use the pose time if timestamps are reasonable
+                timeout=rclpy.duration.Duration(seconds=timeout_sec)
+            )
+            pose_world: Pose = do_transform_pose(pose_msg.pose, tf)
+            # pose_world.header.frame_id = WORLD_FRAME  # make sure it says 'world'
+            # keep the original timestamp (or set to now() if you prefer)
+            return pose_world
+        except (LookupException, ConnectivityException, ExtrapolationException) as e:
+            self.get_logger().warn(
+                f"TF transform failed ({WORLD_FRAME} <- {src_frame}) at t={pose_msg.header.stamp.sec}.{pose_msg.header.stamp.nanosec}: {e}"
+            )
+            return None
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = GocMpcCartesianNode()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
