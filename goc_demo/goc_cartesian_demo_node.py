@@ -11,7 +11,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState, PointCloud
-from geometry_msgs.msg import PoseStamped, Pose
+from geometry_msgs.msg import PoseStamped, TwistStamped, Pose, Twist
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from builtin_interfaces.msg import Duration as RosDuration
@@ -37,8 +37,10 @@ class GocMpcCartesianNode(Node):
         super().__init__("goc_mpc_cartesian_node")
         
         # --- Parameters (your snippet + a couple extra) ---
-        self.declare_parameter("left_pose_topic", "/left_tcp_pose_broadcaster/pose")
-        self.declare_parameter("right_pose_topic", "/right_tcp_pose_broadcaster/pose")
+        self.declare_parameter("left_pose_topic", "/left_cartesian_motion_controller/current_pose")
+        self.declare_parameter("left_twist_topic", "/left_cartesian_motion_controller/current_twist")
+        self.declare_parameter("right_pose_topic", "/right_cartesian_motion_controller/current_pose")
+        self.declare_parameter("right_twist_topic", "/right_cartesian_motion_controller/current_twist")
         self.declare_parameter("keypoints_topic", "/demo_world_node/centroids_world")
         self.declare_parameter("rate_hz", 30.0)
         self.declare_parameter("dry_run", False)
@@ -50,8 +52,11 @@ class GocMpcCartesianNode(Node):
 
         # Read params
         self._left_pose_topic: str = self.get_parameter("left_pose_topic").value
+        self._left_twist_topic: str = self.get_parameter("left_twist_topic").value
         self._right_pose_topic: str = self.get_parameter("right_pose_topic").value
+        self._right_twist_topic: str = self.get_parameter("right_twist_topic").value
         self._keypoints_topic: str = self.get_parameter("keypoints_topic").value
+
         self._rate_hz: float = float(self.get_parameter("rate_hz").value)
         self._preview_points: int = int(self.get_parameter("preview_points").value)
         self._dt_scale: float = float(self.get_parameter("dt_scale").value)
@@ -85,8 +90,12 @@ class GocMpcCartesianNode(Node):
         # --- Subscriptions ---
         self._latest_left_pose: Optional[PoseStamped] = None
         self.create_subscription(PoseStamped, self._left_pose_topic, self._on_left_pose, pose_qos)
+        self._latest_left_twist: Optional[TwistStamped] = None
+        self.create_subscription(TwistStamped, self._left_twist_topic, self._on_left_twist, pose_qos)
         self._latest_right_pose: Optional[PoseStamped] = None
         self.create_subscription(PoseStamped, self._right_pose_topic, self._on_right_pose, pose_qos)
+        self._latest_right_twist: Optional[TwistStamped] = None
+        self.create_subscription(TwistStamped, self._right_twist_topic, self._on_right_twist, pose_qos)
 
         self._latest_keypoints: np.ndarray = np.zeros((0, 3))
         self.create_subscription(PointCloud, self._keypoints_topic, self._on_keypoints, keypoints_qos)
@@ -132,9 +141,12 @@ class GocMpcCartesianNode(Node):
 
         graph = GraphOfConstraints(symbolic_plant, ["free_body_0", "free_body_1"], [],
                                    state_lower_bound, state_upper_bound)
-
-        graph.structure.add_nodes(2)
+        # graph.structure.add_nodes(1)
+        graph.structure.add_nodes(3)
         graph.structure.add_edge(0, 1, True)
+        graph.structure.add_edge(1, 2, True)
+
+        joint_agent_dim = graph.num_agents * graph.dim;
 
         # goal_position_11 = np.array([-0.40113339852313007, -0.03349509404906316, 0.32730235489950865])
         # goal_position_12 = np.array([0.40308290695775584, -0.03316039003577954, 0.3736924707485338])
@@ -146,18 +158,22 @@ class GocMpcCartesianNode(Node):
         #                             -0.1412037429408065, -0.04868852932116686, 0.5430362892168395, 1.0, 0.0, 0.0, 0.0])
         # phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
 
-        goal_position_1 = np.array([-0.40113339852313007, -0.03349509404906316, 0.32730235489950865, 0.0007192738629538007, -0.0021238036272181113, 0.7088539926431737, -0.7053516776878712,
-                                    0.40308290695775584, -0.03316039003577954, 0.3736924707485338, 0.000650165070815199, 0.0011290452852024918, -0.7071217216542918, 0.7070906400927642])
-        goal_position_2 = np.array([-0.40113339852313007, -0.03349509404906316, 0.22730235489950865, 0.0007192738629538007, -0.0021238036272181113, 0.7088539926431737, -0.7053516776878712,
-                                    0.40308290695775584, -0.03316039003577954, 0.2736924707485338, 0.000650165070815199, 0.0011290452852024918, -0.7071217216542918, 0.7070906400927642])
-
-        joint_agent_dim = graph.num_agents * graph.dim;
-
+        goal_position_1 = np.array([0.30, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0,
+                                    -0.30, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0])
         phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+        # graph.add_grasp_change(phi1, "release", 0, 0);
+
+        goal_position_2 = np.array([0.50, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0,
+                                    -0.50, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0])
+        phi1 = graph.add_agents_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
         # graph.add_grasp_change(phi0, "grab", 0, 0);
 
-        phi1 = graph.add_agents_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
-        # graph.add_grasp_change(phi1, "release", 0, 0);
+        home_position_1 = np.array([0.40, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0,
+                                    -0.40, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0])
+        # home_position_2 = np.array([0.40, 0.0, 0.4, 0.5, 0.5, -0.5, -0.5,
+        #                             -0.40, 0.0, 0.4, 0.5, 0.5, -0.5, -0.5])
+        # phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
+        phi2 = graph.add_agents_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
 
         # save intended number of keypoints
         self.n_keypoints = graph.num_objects
@@ -165,7 +181,8 @@ class GocMpcCartesianNode(Node):
         # GoC-MPC
         spline_spec = [Block.R(3), Block.SO3()]
         goc_mpc = GraphOfConstraintsMPC(graph, spline_spec,
-                                        short_path_time_per_step = 0.02)
+                                        time_delta_cutoff = 0.35,
+                                        short_path_time_per_step = 0.1)
                                         # max_vel = 0.05,  # maximum velocity for every joint
                                         # max_acc = 0.05,  # maximum acceleration for every joint
                                         # max_jerk = 0.05) # maximum jerk for every joint
@@ -181,18 +198,35 @@ class GocMpcCartesianNode(Node):
         if pw is not None:
             self._latest_left_pose = pw
 
+    def _on_left_twist(self, msg: TwistStamped):
+        # msg is in left_base_link; convert to world
+        tw = self._twist_to_world(msg)
+        if tw is not None:
+            self._latest_left_twist = tw
+
     def _on_right_pose(self, msg: PoseStamped):
         # msg is in right_base_link; convert to world
         pw = self._to_world(msg)
         if pw is not None:
             self._latest_right_pose = pw
 
+    def _on_right_twist(self, msg: TwistStamped):
+        # msg is in right_base_link; convert to world
+        tw = self._twist_to_world(msg)
+        if tw is not None:
+            self._latest_right_twist = tw
+
     def _on_keypoints(self, msg: PointCloud):
         self._latest_keypoints = np.array([(p.x, p.y, p.z) for p in msg.points])
 
-    def _extract_state(self, left_pose: Pose, right_pose: Pose, kps: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _extract_state(self,
+                       left_pose: Pose,
+                       left_twist: Twist,
+                       right_pose: Pose,
+                       right_twist: Twist,
+                       kps: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
-        def to_arr(pose: Pose):
+        def pose_to_arr(pose: Pose):
             return np.array([pose.position.x,
                              pose.position.y,
                              pose.position.z,
@@ -201,12 +235,20 @@ class GocMpcCartesianNode(Node):
                              pose.orientation.y,
                              pose.orientation.z])
 
-        # Reorder according to self._joints
-        left_x = to_arr(left_pose)
-        left_x_dot = np.zeros((6,))
+        def twist_to_arr(twist: Twist):
+            return np.array([twist.linear.x,
+                             twist.linear.y,
+                             twist.linear.z,
+                             twist.angular.x,
+                             twist.angular.y,
+                             twist.angular.z])
 
-        right_x = to_arr(left_pose)
-        right_x_dot = np.zeros((6,))
+        # Reorder according to self._joints
+        left_x = pose_to_arr(left_pose)
+        left_x_dot = twist_to_arr(left_twist)
+
+        right_x = pose_to_arr(right_pose)
+        right_x_dot = twist_to_arr(right_twist)
 
         kp_x = kps[:self.n_keypoints].flatten()
         kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
@@ -221,6 +263,10 @@ class GocMpcCartesianNode(Node):
             return
         if self._latest_right_pose is None:
             return
+        if self._latest_left_twist is None:
+            return
+        if self._latest_right_twist is None:
+            return
         if self._latest_keypoints is None:
             return
 
@@ -231,13 +277,22 @@ class GocMpcCartesianNode(Node):
             if self._dry_run:
                 if self._obs is None:
                     self._obs, _ = self._env.reset()
-                    x, x_dot = self._extract_state(self._latest_left_pose, self._latest_right_pose, self._latest_keypoints)
+                    x, x_dot = self._extract_state(self._latest_left_pose,
+                                                   self._latest_left_twist,
+                                                   self._latest_right_pose,
+                                                   self._latest_right_twist,
+                                                   self._latest_keypoints)
                     self._env._set_controlled_q(x)
                     self._env._set_controlled_qdot(x_dot)
+                    self._env.render()
                 else:
                     x, x_dot = self._obs
             else:
-                x, x_dot = self._extract_state(self._latest_left_pose, self._latest_right_pose, self._latest_keypoints)
+                x, x_dot = self._extract_state(self._latest_left_pose,
+                                               self._latest_left_twist,
+                                               self._latest_right_pose,
+                                               self._latest_right_twist,
+                                               self._latest_keypoints)
 
         except Exception as e:
             self.get_logger().warn(f"Bad State: {e}")
@@ -246,6 +301,9 @@ class GocMpcCartesianNode(Node):
         # MPC step
         try:
             xi_h, _, _ = self.goc_mpc.step(t, x, x_dot)
+            # with open("./goc_mpc_state.pkl", "wb") as f:
+            #     self.goc_mpc.dump(f, x, x_dot)
+            # breakpoint()
         except Exception as e:
             self.get_logger().error(f"goc_mpc.step failed: {e}")
             return
@@ -280,13 +338,13 @@ class GocMpcCartesianNode(Node):
             qpos = xi_h[target]
             self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
         else:
-            qpos = xi_h[target]
+            qpos = xi_h[0]
             self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
             self.left_target_pose_publisher.publish(left_target_pose_stamped)
             self.right_target_pose_publisher.publish(right_target_pose_stamped)
 
     # --- Helpers ---
-    def _to_world(self, pose_msg: PoseStamped, timeout_sec: float = 0.05) -> Optional[PoseStamped]:
+    def _to_world(self, pose_msg: PoseStamped, timeout_sec: float = 0.05) -> Optional[Pose]:
         """Transform a PoseStamped from its header.frame_id to WORLD_FRAME."""
         if pose_msg is None:
             return None
@@ -295,7 +353,7 @@ class GocMpcCartesianNode(Node):
             self.get_logger().warn("Incoming PoseStamped has empty header.frame_id")
             return None
         if src_frame == WORLD_FRAME:
-            return pose_msg  # already in world
+            return pose_msg.pose  # already in world
 
         try:
             # Get transform: target <- source (i.e., world <- src_frame)
@@ -314,6 +372,22 @@ class GocMpcCartesianNode(Node):
                 f"TF transform failed ({WORLD_FRAME} <- {src_frame}) at t={pose_msg.header.stamp.sec}.{pose_msg.header.stamp.nanosec}: {e}"
             )
             return None
+
+
+    def _twist_to_world(self, twist_msg: TwistStamped, timeout_sec: float = 0.05) -> Optional[Twist]:
+        """
+        Transform a TwistStamped into the world frame.
+        """
+        if twist_msg is None:
+            return None
+        src_frame = twist_msg.header.frame_id
+        if not src_frame:
+            self.get_logger().warn("Incoming PoseStamped has empty header.frame_id")
+            return None
+        if src_frame == WORLD_FRAME:
+            return twist_msg.twist  # already in world
+
+        raise NotImplementedError()
 
 
 def main(args=None):

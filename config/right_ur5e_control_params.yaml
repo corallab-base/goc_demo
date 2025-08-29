@@ -187,7 +187,7 @@ right_freedrive_mode_controller:
 
 right_tcp_pose_broadcaster:
   ros__parameters:
-    frame_id: right_base
+    frame_id: world
     pose_name: right_tcp_pose
     tf:
       child_frame_id: right_tool0_controller

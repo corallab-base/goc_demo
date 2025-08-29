@@ -61,7 +61,7 @@
       visual_parameters_file="$(arg visual_params)"
       initial_positions="${xacro.load_yaml(initial_positions_file)}"
       robot_ip="10.164.8.235"
-      reverse_ip="0.0.0.0"
+      reverse_ip="10.164.8.247"
       script_filename="$(arg script_filename)"
       output_recipe_filename="$(arg output_recipe_filename)"
       input_recipe_filename="$(arg input_recipe_filename)"
@@ -69,7 +69,7 @@
       reverse_port="50001"
       script_sender_port="50002"
       trajectory_port="50003">
-    <origin xyz="0.3 -0.4 0" rpy="0 0 1.5708" />
+    <origin xyz="0.36 -0.7 0" rpy="0 0 1.5708" />
   </xacro:ur_robot>
 
   <xacro:ur_robot
@@ -82,7 +82,7 @@
       visual_parameters_file="$(arg visual_params)"
       initial_positions="${xacro.load_yaml(initial_positions_file)}"
       robot_ip="10.164.8.222"
-      reverse_ip="0.0.0.0"
+      reverse_ip="10.164.8.247"
       script_filename="$(arg script_filename)"
       output_recipe_filename="$(arg output_recipe_filename)"
       input_recipe_filename="$(arg input_recipe_filename)"
@@ -90,7 +90,7 @@
       reverse_port="50005"
       script_sender_port="50006"
       trajectory_port="50007">
-    <origin xyz="-0.3 -0.4 0" rpy="0 0 1.5708" />
+    <origin xyz="-0.36 -0.7 0" rpy="0 0 1.5708" />
   </xacro:ur_robot>
 
 </robot>

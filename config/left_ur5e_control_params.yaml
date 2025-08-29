@@ -186,7 +186,7 @@ left_freedrive_mode_controller:
 
 left_tcp_pose_broadcaster:
   ros__parameters:
-    frame_id: left_base
+    frame_id: world
     pose_name: left_tcp_pose
     tf:
       child_frame_id: left_tool0_controller
