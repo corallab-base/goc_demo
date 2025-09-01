@@ -19,6 +19,7 @@ from builtin_interfaces.msg import Duration as RosDuration
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 from tf2_geometry_msgs import do_transform_pose  # applies TransformStamped to Pose/PoseStamped
 
+from goc_demo import robotiq
 from goc_mpc.splines import Block
 from goc_mpc.goc_mpc import GraphOfConstraints, GraphOfConstraintsMPC
 from goc_mpc.simple_drake_env import SimpleDrakeGym
@@ -111,6 +112,34 @@ class GocMpcCartesianNode(Node):
                 PoseStamped, right_target_topic_name, 10
             )
 
+        # instatiate real grippers (not the cleanest, but has to be done)
+        left_ip_address = "10.164.8.235"
+        self.left_real_gripper = robotiq.RobotiqGripper(disabled=False)
+        self.left_real_gripper.connect(left_ip_address, 63352)
+        self.left_real_gripper.activate()
+        self.left_real_gripper.open()
+
+        right_ip_address = "10.164.8.222"
+        self.right_real_gripper = robotiq.RobotiqGripper(disabled=False)
+        self.right_real_gripper.connect(right_ip_address, 63352)
+        self.right_real_gripper.activate()
+        self.right_real_gripper.open()
+
+        self.left_robot_paused = False
+        self.right_robot_paused = False
+        self._left_pre_grasp_timer = None
+        self._right_pre_grasp_timer = None
+        self._left_resume_timer = None
+        self._right_resume_timer = None
+
+        # Pending gripper cmds (latched until pre-delay expires)
+        self._left_pending_gripper_cmd = None
+        self._right_pending_gripper_cmd = None
+
+        # Tunables
+        self._grasp_settle_sec = 1.00          # wait before actuating gripper
+        self._grasp_pause_after_cmd_sec = 1.00 # time to remain paused after actuation
+
         # --- Controller ---
         self.n_keypoints = 0
         self.goc_mpc = self._setup_goc_mpc()
@@ -131,7 +160,7 @@ class GocMpcCartesianNode(Node):
         # , "ur5e_1"
 
         # env and visualization
-        self._env = SimpleDrakeGym(["free_body_0", "free_body_1"], [])
+        self._env = SimpleDrakeGym(["free_body_0", "free_body_1"], ["cube_0", "cube_1", "cube_2"])
 
         # see if this can be improved
         state_lower_bound = -100.0
@@ -139,14 +168,14 @@ class GocMpcCartesianNode(Node):
 
         symbolic_plant = self._env.plant.ToSymbolic()
 
-        graph = GraphOfConstraints(symbolic_plant, ["free_body_0", "free_body_1"], [],
+        graph = GraphOfConstraints(symbolic_plant, ["free_body_0", "free_body_1"], ["cube_0", "cube_1", "cube_2"],
                                    state_lower_bound, state_upper_bound)
-        # graph.structure.add_nodes(1)
-        graph.structure.add_nodes(3)
-        graph.structure.add_edge(0, 1, True)
-        graph.structure.add_edge(1, 2, True)
 
+        agent_dim = graph.dim;
         joint_agent_dim = graph.num_agents * graph.dim;
+
+        # graph.structure.add_nodes(1)
+
 
         # goal_position_11 = np.array([-0.40113339852313007, -0.03349509404906316, 0.32730235489950865])
         # goal_position_12 = np.array([0.40308290695775584, -0.03316039003577954, 0.3736924707485338])
@@ -158,30 +187,123 @@ class GocMpcCartesianNode(Node):
         #                             -0.1412037429408065, -0.04868852932116686, 0.5430362892168395, 1.0, 0.0, 0.0, 0.0])
         # phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
 
-        goal_position_1 = np.array([0.30, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0,
-                                    -0.30, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0])
-        phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
-        # graph.add_grasp_change(phi1, "release", 0, 0);
 
-        goal_position_2 = np.array([0.50, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0,
-                                    -0.50, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0])
-        phi1 = graph.add_agents_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
-        # graph.add_grasp_change(phi0, "grab", 0, 0);
+        def do_move_in_circles(graph):
+            graph.structure.add_nodes(3)
+            graph.structure.add_edge(0, 1, True)
+            graph.structure.add_edge(1, 2, True)
 
-        home_position_1 = np.array([0.40, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0,
-                                    -0.40, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0])
-        # home_position_2 = np.array([0.40, 0.0, 0.4, 0.5, 0.5, -0.5, -0.5,
-        #                             -0.40, 0.0, 0.4, 0.5, 0.5, -0.5, -0.5])
-        # phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
-        phi2 = graph.add_agents_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
+            goal_position_1 = np.array([0.30, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0,
+                                        -0.30, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0])
+            phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+            # graph.add_grasp_change(phi1, "release", 0, 0);
+
+            goal_position_2 = np.array([0.50, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0,
+                                        -0.50, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0])
+            phi1 = graph.add_agents_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
+            # graph.add_grasp_change(phi0, "grab", 0, 0);
+
+            home_position_1 = np.array([0.40, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0,
+                                        -0.40, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0])
+            # home_position_2 = np.array([0.40, 0.0, 0.4, 0.5, 0.5, -0.5, -0.5,
+            #                             -0.40, 0.0, 0.4, 0.5, 0.5, -0.5, -0.5])
+            # phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
+            phi2 = graph.add_agents_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
+
+        def do_go_over_cube(graph):
+            graph.structure.add_nodes(4)
+            graph.structure.add_edge(0, 1, True)
+            graph.structure.add_edge(1, 2, True)
+            graph.structure.add_edge(2, 3, True)
+
+            home_position_1 = np.array([0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0,
+                                        -0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0])
+            phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
+
+            phi1 = graph.add_robot_above_cube_constraint(1, 0, 0, 0.16)
+            graph.add_grasp_change(phi1, "grab", 0, 0);
+
+            goal_position_1 = np.array([0.0, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0,
+                                        -0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0])
+            phi2 = graph.add_agents_linear_eq(2, np.eye(joint_agent_dim), goal_position_1)
+
+            goal_position_2 = np.array([0.0, 0.0, 0.2, 0.0, 0.0, 1.0, 0.0,
+                                        -0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0])
+            phi3 = graph.add_agents_linear_eq(3, np.eye(joint_agent_dim), goal_position_2)
+            graph.add_grasp_change(phi3, "release", 0, 0);
+
+        def do_stack_cubes(graph):
+            graph.structure.add_nodes(11)
+
+            graph.structure.add_edge(0, 1, True)
+            graph.structure.add_edge(0, 5, True)
+
+            graph.structure.add_edge(1, 2, True)
+            graph.structure.add_edge(2, 3, True)
+            graph.structure.add_edge(3, 4, True)
+
+            graph.structure.add_edge(4, 9, True)
+
+            graph.structure.add_edge(5, 6, True)
+            graph.structure.add_edge(6, 7, True)
+            graph.structure.add_edge(7, 8, True)
+
+            graph.structure.add_edge(9, 7, True)
+
+            graph.structure.add_edge(8, 10, True)
+
+            left_safe_position = np.array([0.30, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0])
+            left_low_position = np.array([0.30, 0.0, 0.17, 0.0, 0.0, 1.0, 0.0])
+            right_safe_position = np.array([-0.30, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0])
+            right_low_position = np.array([-0.30, 0.0, 0.18, 0.0, 0.0, 1.0, 0.0])
+
+            home_position_1 = np.array([0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0,
+                                        -0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0])
+            phi0 = graph.add_agents_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
+
+            phi1 = graph.add_robot_above_cube_constraint(1, 0, 2, 0.20, y_offset=-0.02);
+            phi2 = graph.add_robot_above_cube_constraint(2, 0, 2, 0.15, y_offset=-0.02);
+            graph.add_grasp_change(phi2, "grab", 0, 2);
+
+            # graspPhi0 = graph.add_robot_holding_cube_constraint(0, 1, 0, 0, 0.1);
+
+            phi3 = graph.add_robot_above_cube_constraint(3, 0, 1, 0.25, x_offset=-0.01, y_offset=-0.05);
+            phi4 = graph.add_robot_above_cube_constraint(4, 0, 1, 0.18, x_offset=-0.01, y_offset=-0.05);
+            # phi3 = graph.add_agent_linear_eq(3, 0, np.eye(agent_dim), left_safe_position);
+            # phi4 = graph.add_agent_linear_eq(4, 0, np.eye(agent_dim), left_low_position);
+            graph.add_grasp_change(phi4, "release", 0, 2);
+
+            phi5 = graph.add_robot_above_cube_constraint(5, 1, 0, 0.20, y_offset=-0.04);
+            phi6 = graph.add_robot_above_cube_constraint(6, 1, 0, 0.15, y_offset=-0.04);
+            graph.add_grasp_change(phi6, "grab", 1, 0);
+
+            # graspPhi1 = graph.add_robot_holding_cube_constraint(2, 3, 1, 2, 0.1);
+
+            phi7 = graph.add_robot_above_cube_constraint(7, 1, 2, 0.25, x_offset=0.02, y_offset=-0.05); # , x_offset=0.0, 
+            phi8 = graph.add_robot_above_cube_constraint(8, 1, 2, 0.19, x_offset=0.02, y_offset=-0.05); # , x_offset=0.0, 
+            # phi7 = graph.add_agent_linear_eq(7, 1, np.eye(agent_dim), right_safe_position);
+            # phi8 = graph.add_agent_linear_eq(8, 1, np.eye(agent_dim), right_low_position);
+            graph.add_grasp_change(phi8, "release", 1, 0);
+            # graph.add_grasp_change(phi8, "release", 1, 2);
+
+            phi9 = graph.add_agent_linear_eq(9, 0, np.eye(agent_dim), left_safe_position);
+            phi10 = graph.add_agent_linear_eq(10, 1, np.eye(agent_dim), right_safe_position);
+
+
+
+        # do_move_in_circles(graph)
+        # do_go_over_cube(graph)
+        do_stack_cubes(graph)
 
         # save intended number of keypoints
         self.n_keypoints = graph.num_objects
 
+        self.get_logger().info(f"n_keypoints: {self.n_keypoints}")
+
         # GoC-MPC
         spline_spec = [Block.R(3), Block.SO3()]
         goc_mpc = GraphOfConstraintsMPC(graph, spline_spec,
-                                        time_delta_cutoff = 0.35,
+                                        time_delta_cutoff = 0.30,
                                         short_path_time_per_step = 0.1)
                                         # max_vel = 0.05,  # maximum velocity for every joint
                                         # max_acc = 0.05,  # maximum acceleration for every joint
@@ -250,6 +372,9 @@ class GocMpcCartesianNode(Node):
         right_x = pose_to_arr(right_pose)
         right_x_dot = twist_to_arr(right_twist)
 
+        if kps.shape[0] != self.n_keypoints:
+            raise ValueError("Not enough keypoints yet")
+
         kp_x = kps[:self.n_keypoints].flatten()
         kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
         
@@ -308,7 +433,8 @@ class GocMpcCartesianNode(Node):
             self.get_logger().error(f"goc_mpc.step failed: {e}")
             return
 
-        self.get_logger().info(f"next waypoints in: {self.goc_mpc.timing_mpc.get_next_taus()}")
+        nodes_and_taus = list(zip(self.goc_mpc.timing_mpc.get_next_nodes(), self.goc_mpc.timing_mpc.get_next_taus()))
+        self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
 
         target = 4
 
@@ -340,10 +466,122 @@ class GocMpcCartesianNode(Node):
         else:
             qpos = xi_h[0]
             self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
-            self.left_target_pose_publisher.publish(left_target_pose_stamped)
-            self.right_target_pose_publisher.publish(right_target_pose_stamped)
+
+            if len(self.goc_mpc.last_grasp_commands) > 0:
+                # self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
+                for cmd, robot, point in self.goc_mpc.last_grasp_commands:
+                    if robot == "free_body_0":
+                        side = "left"
+                    elif robot == "free_body_1":
+                        side = "right"
+                    else:
+                        continue
+                    self._pause_robot_delayed(
+                        side=side,
+                        pre_delay=self._grasp_settle_sec,
+                        post_delay=self._grasp_pause_after_cmd_sec,
+                        gripper_cmd=cmd
+                    )
+
+            if not self.left_robot_paused:
+                self.left_target_pose_publisher.publish(left_target_pose_stamped)
+
+            if not self.right_robot_paused:
+                self.right_target_pose_publisher.publish(right_target_pose_stamped)
 
     # --- Helpers ---
+
+    def _do_gripper_cmd(self, side: str, cmd: str):
+        try:
+            gr = self.left_real_gripper if side == 'left' else self.right_real_gripper
+            if cmd == 'grab':
+                gr.close()
+            elif cmd == 'release':
+                gr.open()
+            else:
+                self.get_logger().warn(f"Unknown gripper cmd: {cmd}")
+        except Exception as e:
+            self.get_logger().error(f"Gripper {side} command '{cmd}' failed: {e}")
+
+    def _resume_robot_left(self):
+        self.left_robot_paused = False
+        if self._left_resume_timer is not None:
+            self._left_resume_timer.cancel()
+            self._left_resume_timer = None
+        self.get_logger().info("Left robot resumed after grasp pause.")
+
+    def _resume_robot_right(self):
+        self.right_robot_paused = False
+        if self._right_resume_timer is not None:
+            self._right_resume_timer.cancel()
+            self._right_resume_timer = None
+        self.get_logger().info("Right robot resumed after grasp pause.")
+
+    def _on_left_pre_grasp(self):
+        """Fires after settle delay: actuate gripper then start resume timer."""
+        if self._left_pre_grasp_timer is not None:
+            self._left_pre_grasp_timer.cancel()
+            self._left_pre_grasp_timer = None
+        cmd = self._left_pending_gripper_cmd
+        self._left_pending_gripper_cmd = None
+        if cmd is not None:
+            self._do_gripper_cmd('left', cmd)
+        # chain the resume one-shot
+        if self._left_resume_timer is not None:
+            self._left_resume_timer.cancel()
+            self._left_resume_timer = None
+        self._left_resume_timer = self.create_timer(self._grasp_pause_after_cmd_sec,
+                                                    self._resume_robot_left)
+
+    def _on_right_pre_grasp(self):
+        if self._right_pre_grasp_timer is not None:
+            self._right_pre_grasp_timer.cancel()
+            self._right_pre_grasp_timer = None
+        cmd = self._right_pending_gripper_cmd
+        self._right_pending_gripper_cmd = None
+        if cmd is not None:
+            self._do_gripper_cmd('right', cmd)
+        if self._right_resume_timer is not None:
+            self._right_resume_timer.cancel()
+            self._right_resume_timer = None
+        self._right_resume_timer = self.create_timer(self._grasp_pause_after_cmd_sec,
+                                                     self._resume_robot_right)
+
+    def _pause_robot_delayed(self, side: str, pre_delay: float, post_delay: float, gripper_cmd: str):
+        """
+        Immediately pause 'side', wait pre_delay, then execute gripper_cmd, then
+        wait post_delay and resume. If re-triggered, refresh the sequence.
+        """
+        if side == 'left':
+            self.left_robot_paused = True
+            self._left_pending_gripper_cmd = gripper_cmd
+
+            # refresh pre-grasp one-shot
+            if self._left_pre_grasp_timer is not None:
+                self._left_pre_grasp_timer.cancel()
+                self._left_pre_grasp_timer = None
+            self._left_pre_grasp_timer = self.create_timer(pre_delay, self._on_left_pre_grasp)
+
+            # cancel any existing resume timer; it will be reset after actuation
+            if self._left_resume_timer is not None:
+                self._left_resume_timer.cancel()
+                self._left_resume_timer = None
+
+        elif side == 'right':
+            self.right_robot_paused = True
+            self._right_pending_gripper_cmd = gripper_cmd
+
+            if self._right_pre_grasp_timer is not None:
+                self._right_pre_grasp_timer.cancel()
+                self._right_pre_grasp_timer = None
+            self._right_pre_grasp_timer = self.create_timer(pre_delay, self._on_right_pre_grasp)
+
+            if self._right_resume_timer is not None:
+                self._right_resume_timer.cancel()
+                self._right_resume_timer = None
+        else:
+            self.get_logger().warn(f"_pause_robot_delayed: unknown side '{side}'")
+
     def _to_world(self, pose_msg: PoseStamped, timeout_sec: float = 0.05) -> Optional[Pose]:
         """Transform a PoseStamped from its header.frame_id to WORLD_FRAME."""
         if pose_msg is None:

@@ -7,6 +7,8 @@
   <maintainer email="tassos.manganaris@gmail.com">tassos</maintainer>
   <license>Apache-2.0</license>
 
+  <depend>goc_demo_interfaces</depend>
+
   <exec_depend>rclpy</exec_depend>
   <exec_depend>robotiq_controllers</exec_depend>
 

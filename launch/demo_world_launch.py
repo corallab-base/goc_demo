@@ -266,6 +266,7 @@ def generate_launch_description():
             'camera_frame': 'camera_color_optical_frame',
             'centroids_px_topic': '/sam2_click_tracker_node/centroids_px',
             'centroids_3d_topic': '/sam2_click_tracker_node/centroids_3d',
+            'color_topic': '/camera/camera/color/image_raw',
             'depth_topic': '/camera/camera/aligned_depth_to_color/image_raw',
             'camera_info_topic': '/camera/camera/color/camera_info',
             'publish_markers': True,
@@ -278,7 +279,7 @@ def generate_launch_description():
     launch_rviz = LaunchConfiguration("launch_rviz")
 
     # --- RViz2 with preloaded config ---
-    rviz_cfg = PathJoinSubstitution([FindPackageShare('goc_demo'), "config", "centroids_world.rviz"])
+    rviz_cfg = PathJoinSubstitution([FindPackageShare('goc_demo'), "config", "demo_world.rviz"])
     rviz = Node(
         package="rviz2",
         executable="rviz2",

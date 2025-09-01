@@ -1,0 +1,3 @@
+source goc-demo-venv/bin/activate
+ros2 launch goc_demo tracker_with_realsense.launch.py camera_ns:=camera
+ros2 launch goc_demo demo_world_launch.py left_robot_ip:=10.164.8.235 right_robot_ip:=10.164.8.222
