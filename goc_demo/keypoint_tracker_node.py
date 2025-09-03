@@ -5,6 +5,7 @@ import time
 import copy
 from importlib.resources import files
 from collections import deque
+import dataclasses
 
 import numpy as np
 import cv2
@@ -18,6 +19,14 @@ import torch
 import sam2
 from sam2.build_sam import build_sam2, build_sam2_video_predictor
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+
+# --- KLT/ORB params ---
+KLT_WIN = (21, 21)
+KLT_MAX_LEVEL = 3
+KLT_CRITERIA = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 1e-4)
+ORB_N_FEATURES = 300
+MASK_DILATE_PX = 5
 
 
 # ---------- Image helpers (cv_bridge-free) ----------
@@ -53,6 +62,27 @@ def numpy_to_imgmsg(img: np.ndarray, frame_id: str, encoding="bgr8") -> Image:
     msg.data = memoryview(img.tobytes())
     return msg
 
+def robust_depth_at_pixel(depth_m: np.ndarray, u: float, v: float, k: int = 5) -> float:
+    """Median depth in a kxk window around (u, v). Returns 0.0 if none valid."""
+    if depth_m is None:
+        return 0.0
+    h, w = depth_m.shape[:2]
+    ui, vi = int(round(u)), int(round(v))
+    x0 = max(0, ui - k // 2); x1 = min(w, ui + k // 2 + 1)
+    y0 = max(0, vi - k // 2); y1 = min(h, vi + k // 2 + 1)
+    patch = depth_m[y0:y1, x0:x1]
+    vals = patch[patch > 0.0]
+    if vals.size == 0:
+        return 0.0
+    return float(np.median(vals))
+
+@dataclasses.dataclass
+class TrackedPoint:
+    oid: int
+    pt: np.ndarray        # shape (2,) float32 [u, v]
+    desc: np.ndarray      # ORB 1x32 (uint8), or None until computed
+    valid: bool = True
+    lost_count: int = 0
 
 # =================== Config (env overrides ok) ===================
 SAM2_CFG   = os.environ.get("SAM2_CFG", "sam2.1_hiera_l.yaml")
@@ -78,26 +108,30 @@ def mask_centroid_bool(m: np.ndarray):
 
 class SAM2ClickTracker:
     """
-    Minimal click-to-track with SAM 2 using the 'video predictor' incremental API.
+    Minimal click-to-track with SAM 2 using the 'video predictor' incremental API,
+    plus per-object precise point tracking (KLT + ORB re-lock inside SAM mask).
     """
 
     def __init__(self, device=DEVICE, cfg=SAM2_CFG, ckpt=SAM2_CKPT):
         self.device = device
-        # image model for point prompting
         sam_model = build_sam2(cfg, ckpt, device=device)
         self.img_predictor = SAM2ImagePredictor(sam_model)
 
-        # video predictor (incremental)
         self.video_predictor = build_sam2_video_predictor(cfg, ckpt)
         self.state = self.video_predictor.init_state()
         self.state["images"] = torch.empty((0, 3, 1024, 1024), device=device)
         self.state["video_height"] = None
         self.state["video_width"] = None
 
-        # tracking storage
         self.objects_count = 0
-        self.latest_masks_by_id = {}  # obj_id -> bool HxW
+        self.latest_masks_by_id = {}   # oid -> bool HxW
+        self.tracked_points = {}       # oid -> TrackedPoint
+        self.prev_gray = None
         self.last_frame_idx = -1
+
+        # ORB for re-acquisition
+        self.orb = cv2.ORB_create(ORB_N_FEATURES)
+        self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
     def _ensure_size(self, image_rgb: np.ndarray):
         if self.state["video_height"] is None:
@@ -105,8 +139,40 @@ class SAM2ClickTracker:
             self.state["video_height"] = H
             self.state["video_width"] = W
 
+    def _compute_orb_desc_at(self, gray: np.ndarray, u: float, v: float):
+        """Compute an ORB descriptor at (u, v) by placing a keypoint there."""
+        kp = cv2.KeyPoint(x=float(u), y=float(v), size=16)
+        kps, desc = self.orb.compute(gray, [kp])
+        if desc is None:
+            return None
+        return desc[0:1, :]  # shape (1, 32)
+
+    def _reacquire_inside_mask(self, gray: np.ndarray, mask_bool: np.ndarray, ref_desc: np.ndarray):
+        """
+        Detect ORB in a slightly dilated mask; return best keypoint (u,v) by Hamming distance to ref_desc.
+        """
+        mask_u8 = (mask_bool.astype(np.uint8) * 255)
+        if MASK_DILATE_PX > 0:
+            kernel = np.ones((MASK_DILATE_PX, MASK_DILATE_PX), np.uint8)
+            mask_u8 = cv2.dilate(mask_u8, kernel, iterations=1)
+
+        kps = self.orb.detect(gray, mask=mask_u8)
+        if not kps:
+            return None
+
+        kps, descs = self.orb.compute(gray, kps)
+        if descs is None or len(kps) == 0:
+            return None
+
+        matches = self.bf.match(ref_desc, descs)  # ref_desc is shape (1,32)
+        if len(matches) == 0:
+            return None
+        best = min(matches, key=lambda m: m.distance)
+        u, v = kps[best.trainIdx].pt
+        return np.array([u, v], dtype=np.float32)
+
     def add_point(self, image_rgb: np.ndarray, x: int, y: int):
-        """Add a positive point → seed a new object on this frame."""
+        """Add a positive point → seed a new object on this frame, and remember the exact clicked point."""
         self._ensure_size(image_rgb)
         self.img_predictor.set_image(image_rgb)
 
@@ -128,16 +194,20 @@ class SAM2ClickTracker:
         m_bool = m.astype(bool)
         self.latest_masks_by_id[oid] = m_bool
 
-        # Add current frame and seed
+        # Seed SAM2 state
         frame_idx = self.video_predictor.add_new_frame(self.state, image_rgb)
         self.video_predictor.reset_state(self.state)
         _frame_idx, _, _ = self.video_predictor.add_new_mask(self.state, frame_idx, oid, m_bool)
         self.last_frame_idx = frame_idx
 
+        # Initialize the precise tracked point & descriptor
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        desc = self._compute_orb_desc_at(gray, x, y)
+        self.tracked_points[oid] = TrackedPoint(oid=oid, pt=np.array([float(x), float(y)], dtype=np.float32), desc=desc)
+
         print(f"[sam2_tracker] Added object id={oid} at ({x},{y})")
 
     def _rollover_reseed(self, image_rgb: np.ndarray) -> int:
-        """Bound memory: rebuild state, add current frame once, reseed all objects with latest masks."""
         seeds = {int(oid): m for oid, m in self.latest_masks_by_id.items() if m is not None}
 
         self.state = self.video_predictor.init_state()
@@ -154,10 +224,13 @@ class SAM2ClickTracker:
         return frame_idx
 
     def add_frame(self, image_rgb: np.ndarray):
-        """Append new frame and propagate all tracked masks onto it. Returns (frame_idx, latest_masks_by_id)."""
+        """
+        Append new frame, propagate masks, then update tracked points.
+        Returns (frame_idx, masks_by_id, points_by_id)
+        """
         if len(self.latest_masks_by_id) == 0:
-            # nothing tracked yet
-            return None, self.latest_masks_by_id
+            self.prev_gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+            return None, self.latest_masks_by_id, {}
 
         # bound memory
         if self.state["images"].shape[0] > FRAME_CACHE_LIMIT:
@@ -165,18 +238,78 @@ class SAM2ClickTracker:
         else:
             frame_idx = self.video_predictor.add_new_frame(self.state, image_rgb)
 
-        # propagate
+        # SAM2 propagate masks first
         frame_idx, obj_ids, video_res_masks = self.video_predictor.infer_single_frame(
             inference_state=self.state, frame_idx=frame_idx
         )
-
-        # refresh latest per-object masks
         for i, oid in enumerate(obj_ids):
             m_bool = (video_res_masks[i] > MASK_LOGIT_THR)[0].detach().cpu().numpy().astype(bool)
             self.latest_masks_by_id[int(oid)] = m_bool
-
         self.last_frame_idx = frame_idx
-        return frame_idx, self.latest_masks_by_id
+
+        # KLT flow for all tracked points
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        points_by_id = {}
+
+        # Prepare arrays for vectorized KLT
+        oids = []
+        prev_pts = []
+        for oid, tp in self.tracked_points.items():
+            if tp.valid:
+                oids.append(oid)
+                prev_pts.append(tp.pt)
+        if self.prev_gray is not None and prev_pts:
+            prev_pts_np = np.array(prev_pts, dtype=np.float32).reshape(-1, 1, 2)
+            next_pts, st, err = cv2.calcOpticalFlowPyrLK(
+                self.prev_gray, gray, prev_pts_np, None,
+                winSize=KLT_WIN, maxLevel=KLT_MAX_LEVEL, criteria=KLT_CRITERIA
+            )
+            for i, oid in enumerate(oids):
+                tp = self.tracked_points[oid]
+                if st[i][0] == 1 and np.isfinite(next_pts[i]).all():
+                    new_pt = next_pts[i].reshape(2)
+                    # If mask exists and point is out, try re-lock with ORB inside mask
+                    m = self.latest_masks_by_id.get(oid, None)
+                    if m is not None:
+                        u, v = int(round(new_pt[0])), int(round(new_pt[1]))
+                        in_bounds = (0 <= u < m.shape[1]) and (0 <= v < m.shape[0])
+                        if not in_bounds or (in_bounds and not m[v, u]):
+                            # Try re-acquisition using ORB descriptor; fall back to KLT result if none
+                            ref_desc = tp.desc if tp.desc is not None else self._compute_orb_desc_at(self.prev_gray, *tp.pt)
+                            snapped = self._reacquire_inside_mask(gray, m, ref_desc) if ref_desc is not None else None
+                            if snapped is not None:
+                                new_pt = snapped
+                    tp.pt = new_pt.astype(np.float32)
+                    tp.valid = True
+                    tp.lost_count = 0
+                else:
+                    # KLT failed: try re-acquire with mask + ORB
+                    m = self.latest_masks_by_id.get(oid, None)
+                    ref_desc = tp.desc if tp.desc is not None else (self._compute_orb_desc_at(self.prev_gray, *tp.pt) if self.prev_gray is not None else None)
+                    snapped = self._reacquire_inside_mask(gray, m, ref_desc) if (m is not None and ref_desc is not None) else None
+                    if snapped is not None:
+                        tp.pt = snapped.astype(np.float32)
+                        tp.valid = True
+                        tp.lost_count = 0
+                    else:
+                        tp.lost_count += 1
+                        # Optional: after N fails, mark invalid
+                        if tp.lost_count > 10:
+                            tp.valid = False
+
+                # Update descriptor when valid
+                if tp.valid:
+                    desc_now = self._compute_orb_desc_at(gray, *tp.pt)
+                    if desc_now is not None:
+                        tp.desc = desc_now
+
+        # Output points_by_id for convenience
+        for oid, tp in self.tracked_points.items():
+            if tp.valid:
+                points_by_id[oid] = tp.pt.copy()
+
+        self.prev_gray = gray
+        return frame_idx, self.latest_masks_by_id, points_by_id
 
 
 class SAM2ClickTrackerNode(Node):
@@ -273,6 +406,7 @@ class SAM2ClickTrackerNode(Node):
                 self.get_logger().info("Got r")
                 self.tracker.objects_count = 0
                 self.tracker.latest_masks_by_id = {}
+                self.tracker.tracked_points = {}
 
     def color_cb(self, msg: Image):
         # Convert color → RGB/BGR depending on encoding
@@ -296,40 +430,37 @@ class SAM2ClickTrackerNode(Node):
             self.pending_clicks.clear()
 
         # Run tracker
-        frame_idx, masks_by_id = self.tracker.add_frame(frame_rgb)
+        frame_idx, masks_by_id, points_by_id = self.tracker.add_frame(frame_rgb)
 
-        # 2D pixel centroids
+        # 2D pixel points (was: centroids)
         cloud_px = PointCloud()
         cloud_px.header = msg.header
         ids_channel_px = ChannelFloat32()
         ids_channel_px.name = "id"
 
-        # 3D centroids
+        # 3D points (was: centroids)
         cloud_3d = PointCloud()
         cloud_3d.header = msg.header
         ids_channel_3d = ChannelFloat32()
         ids_channel_3d.name = "id"
 
         have_depth = (self.last_depth_m is not None) and (self.fx is not None)
+        H, W = frame_rgb.shape[:2]
+        depth_ok = have_depth and (self.last_depth_shape == (H, W))
 
-        if masks_by_id:
-            H, W = frame_rgb.shape[:2]
-            # Sanity: depth must match color dims
-            depth_ok = have_depth and (self.last_depth_shape == (H, W))
-            for oid, m in masks_by_id.items():
-                c = mask_centroid_bool(m)
-                if c is None:
-                    continue
-                u, v = c  # pixel coords (x=u, y=v)
+        # Publish the precise tracked points
+        if points_by_id:
+            for oid, pt in points_by_id.items():
+                u, v = float(pt[0]), float(pt[1])
 
-                # Publish 2D
-                cloud_px.points.append(Point32(x=float(u), y=float(v), z=0.0))
+                # 2D
+                cloud_px.points.append(Point32(x=u, y=v, z=0.0))
                 ids_channel_px.values.append(float(oid))
 
-                # Publish 3D if we have aligned depth + intrinsics
+                # 3D
                 if depth_ok:
-                    z = self._robust_depth_at_mask(self.last_depth_m, m, u, v)
-                    if z > 0.0 and np.isfinite(z):
+                    z = robust_depth_at_pixel(self.last_depth_m, u, v, k=DEPTH_K)
+                    if z > 0 and np.isfinite(z):
                         X = (u - self.cx) / self.fx * z
                         Y = (v - self.cy) / self.fy * z
                         cloud_3d.points.append(Point32(x=float(X), y=float(Y), z=float(z)))
@@ -342,26 +473,25 @@ class SAM2ClickTrackerNode(Node):
             cloud_3d.channels.append(ids_channel_3d)
             self.centroids_3d_pub.publish(cloud_3d)
 
-        # Optional annotated output
         if SHOW_ANNOTATED or self.publish_annotated:
             vis = frame_bgr.copy()
+            # Draw masks
             for oid, m in masks_by_id.items():
                 m_u8 = (m.astype(np.uint8) * 255)
                 contours, _ = cv2.findContours(m_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 cv2.drawContours(vis, contours, -1, (0, 255, 255), 2)
-                c = mask_centroid_bool(m)
-                if c is not None:
-                    u, v = int(c[0]), int(c[1])
-                    cv2.circle(vis, (u, v), 4, (0, 0, 255), -1)
-                    label = f"id{oid}"
-                    if have_depth and self.last_depth_shape == vis.shape[:2]:
-                        z = self._robust_depth_at_mask(self.last_depth_m, m, u, v)
-                        if z > 0 and np.isfinite(z) and (self.fx is not None):
-                            X = (u - self.cx) / self.fx * z
-                            Y = (v - self.cy) / self.fy * z
-                            label += f"  Z={z:.3f}m"
-                    cv2.putText(vis, label, (u + 6, v - 6),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
+
+            # Draw precise points
+            for oid, pt in points_by_id.items():
+                u, v = int(round(pt[0])), int(round(pt[1]))
+                cv2.drawMarker(vis, (u, v), (0, 0, 255), markerType=cv2.MARKER_TILTED_CROSS, markerSize=12, thickness=2)
+                label = f"id{oid}"
+                if have_depth and self.last_depth_shape == vis.shape[:2]:
+                    z = robust_depth_at_pixel(self.last_depth_m, u, v, k=DEPTH_K)
+                    if z > 0 and np.isfinite(z) and (self.fx is not None):
+                        label += f"  Z={z:.3f}m"
+                cv2.putText(vis, label, (u + 6, v - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
 
             if SHOW_ANNOTATED:
                 cv2.imshow(WINDOW_NAME, vis)
