@@ -265,9 +265,14 @@ class SAM2ClickTrackerNode(Node):
 
     def _ui_spin(self):
         if SHOW_ANNOTATED:
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            key = cv2.waitKey(1) & 0xFF   # only call once
+            if key == ord('q'):
                 self.get_logger().info("Quit signal (q) received; shutting down.")
                 rclpy.shutdown()
+            elif key == ord('r'):
+                self.get_logger().info("Got r")
+                self.tracker.objects_count = 0
+                self.tracker.latest_masks_by_id = {}
 
     def color_cb(self, msg: Image):
         # Convert color → RGB/BGR depending on encoding
