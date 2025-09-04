@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import numpy as np
 from typing import List, Optional, Tuple, Sequence, Union
+
+import pickle
+from datetime import datetime
 
 import rclpy
 from rclpy.node import Node
@@ -145,8 +149,14 @@ class GocMpcCartesianNode(Node):
         self.goc_mpc = self._setup_goc_mpc()
         self._obs = None
 
+        # metrics
+        self.waypoint_solve_times = []
+        self.timing_solve_times = []
+        self.short_path_solve_times = []
+
         # --- Timing ---
         self._start_time = self.get_clock().now()
+        self.end_elapsed_time = None
         self._timer = self.create_timer(self._period_sec, self._on_timer)
 
         # Track last goal handle (optional)
@@ -426,6 +436,11 @@ class GocMpcCartesianNode(Node):
         # MPC step
         try:
             xi_h, _, _ = self.goc_mpc.step(t, x, x_dot)
+
+            self.waypoint_solve_times.append(self.goc_mpc.waypoint_mpc.get_last_solve_time())
+            self.timing_solve_times.append(self.goc_mpc.timing_mpc.get_last_solve_time())
+            self.short_path_solve_times.append(self.goc_mpc.short_path_mpc.get_last_solve_time())
+
             # with open("./goc_mpc_state.pkl", "wb") as f:
             #     self.goc_mpc.dump(f, x, x_dot)
             # breakpoint()
@@ -435,6 +450,9 @@ class GocMpcCartesianNode(Node):
 
         nodes_and_taus = list(zip(self.goc_mpc.timing_mpc.get_next_nodes(), self.goc_mpc.timing_mpc.get_next_taus()))
         self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
+
+        if len(nodes_and_taus) == 0 and self.end_elapsed_time is None:
+            self.end_elapsed_time = t
 
         target = 4
 
@@ -638,6 +656,20 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+
+        metrics = {
+            "total_time": node.end_elapsed_time,
+            "waypoint_solve_times": node.waypoint_solve_times,
+            "timing_solve_times": node.timing_solve_times,
+            "short_path_solve_times": node.short_path_solve_times,
+        }
+
+        current_datetime = datetime.now()
+
+        results_dir = "experiment_results"
+        with open(os.path.join(results_dir, f"log_file_{current_datetime}.pkl"), "wb") as f:
+            pickle.dump(metrics, f)
+
         node.destroy_node()
         rclpy.shutdown()
 
