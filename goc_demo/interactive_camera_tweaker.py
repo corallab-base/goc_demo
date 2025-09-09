@@ -49,7 +49,7 @@ class InteractiveCameraPoseNode(Node):
         self.declare_parameter("world_frame", "world")
         self.declare_parameter("camera_frame", "camera_color_optical_frame")
         self.declare_parameter("marker_name", "camera_pose_marker")
-        self.declare_parameter("init_xyz", [0.032766; 0.87607; 0.51581])         # meters
+        self.declare_parameter("init_xyz", [0.032766, 0.87607, 0.51581])         # meters
         self.declare_parameter("init_rpy_deg", [-106.830, -2.014, 178.145])     # roll, pitch, yaw in deg
         self.declare_parameter("marker_scale", 0.25)                # length of marker axes (m)
         self.declare_parameter("publish_rate_hz", 30.0)             # re-publish dynamic TF
