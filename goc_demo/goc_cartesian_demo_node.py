@@ -171,12 +171,13 @@ class GocMpcCartesianNode(Node):
         )
 
     def _setup_goc_mpc(self):
-        self._env = SimpleDrakeGym(["free_body_0", "free_body_1"], ["cube_0", "cube_1", "cube_2"])
+        n_points = 2
+        self._env = SimpleDrakeGym(["free_body_0", "free_body_1"], [f"cube_{i}" for i in range(n_points)])
 
-        state_lower_bound = -100.0
-        state_upper_bound = 100.0
+        state_lower_bound = -10.0
+        state_upper_bound = 10.0
         symbolic_plant = self._env.plant.ToSymbolic()
-        graph = GraphOfConstraints(symbolic_plant, ["free_body_0", "free_body_1"], ["cube_0", "cube_1", "cube_2"],
+        graph = GraphOfConstraints(symbolic_plant, ["free_body_0", "free_body_1"], [f"cube_{i}" for i in range(n_points)],
                                    state_lower_bound, state_upper_bound)
 
         agent_dim = graph.dim;
@@ -266,6 +267,8 @@ class GocMpcCartesianNode(Node):
             graph.add_robot_relative_rotation_constraint(start_node, pitcher_approach, 0, RollPitchYaw(3*np.pi/8, 0.0, 0.0).ToQuaternion());
             graph.add_robot_to_point_displacement_constraint(pitcher_approach, 0, 0, np.array([-0.20, 0.00, -0.05]));
 
+            graph.make_node_unpassable(pitcher_approach)
+
             graph.add_robot_relative_rotation_constraint(pitcher_approach, pitcher_pick_up, 0, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
             phi1 = graph.add_robot_to_point_displacement_constraint(pitcher_pick_up, 0, 0, np.array([-0.15, 0.00, -0.04]));
             graph.add_grasp_change(phi1, "grab", 0, 0);
@@ -283,6 +286,8 @@ class GocMpcCartesianNode(Node):
             graph.add_robot_relative_rotation_constraint(start_node, cup_approach, 1, RollPitchYaw(3*np.pi/8, 0.0, 0.0).ToQuaternion());
             graph.add_robot_to_point_displacement_cost(cup_approach, 1, 1, np.array([0.25, 0.0, -0.05]))
 
+            graph.make_node_unpassable(cup_approach)
+            
             graph.add_robot_relative_rotation_constraint(cup_approach, cup_pick_up, 1, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
             phi2 = graph.add_robot_to_point_displacement_constraint(cup_pick_up, 1, 1, np.array([0.10, 0.00, -0.08]));
             graph.add_grasp_change(phi2, "grab", 1, 1);
@@ -326,70 +331,54 @@ class GocMpcCartesianNode(Node):
                                         -0.30, -0.2, 0.5, 0.0, 0.70701, -0.70701, 0.0])
             graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
 
-            # PITCHER
-            pitcher_approach, pitcher_pick_up = graph.structure.add_nodes(2)
-            graph.structure.add_edge(start_node, pitcher_approach, True)
-            graph.structure.add_edge(pitcher_approach, pitcher_pick_up, True)
+            # GRASP TWO CORNERS
+            # corner_approach = graph.structure.add_node()
+            corner_approach, corner_pick_up = graph.structure.add_nodes(2) 
+            graph.structure.add_edge(start_node, corner_approach, True)
+            graph.structure.add_edge(corner_approach, corner_pick_up, True)
 
-            # graph.add_robot_to_point_alignment_cost(pitcher_approach,
-            #                                         0, 0, np.array([0.0, 1.0, 1.0]),
-            #                                         u_body_opt=np.array([1.0, 0.0, 0.0]),
-            #                                         roll_ref_flat=True,
-            #                                         w_flat=1.0)
-            # graph.add_robot_relative_rotation_constraint(start_node, pitcher_approach, 0, RollPitchYaw(np.pi/2, 0.0, 0.0).ToQuaternion());
-            graph.add_robot_relative_rotation_constraint(start_node, pitcher_approach, 0, RollPitchYaw(3*np.pi/8, 0.0, 0.0).ToQuaternion());
-            graph.add_robot_to_point_displacement_constraint(pitcher_approach, 0, 0, np.array([-0.20, 0.00, -0.05]));
+            graph.add_robot_relative_rotation_constraint(start_node, corner_approach, 0, RollPitchYaw(0.0, 1*np.pi/4, 0.0).ToQuaternion())
+            phi1 = graph.add_robot_to_point_displacement_constraint(corner_approach, 0, 0, np.array([0.10, 0.15, -0.14]))
 
-            graph.add_robot_relative_rotation_constraint(pitcher_approach, pitcher_pick_up, 0, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
-            phi1 = graph.add_robot_to_point_displacement_constraint(pitcher_pick_up, 0, 0, np.array([-0.15, 0.00, -0.04]));
-            graph.add_grasp_change(phi1, "grab", 0, 0);
+            graph.add_robot_relative_rotation_constraint(start_node, corner_approach, 1, RollPitchYaw(0.0, -1*np.pi/4, 0.0).ToQuaternion())
+            phi2 = graph.add_robot_to_point_displacement_constraint(corner_approach, 1, 1, np.array([-0.10, 0.15, -0.14]))
 
-            # CUP
-            cup_approach, cup_pick_up = graph.structure.add_nodes(2)
-            graph.structure.add_edge(start_node, cup_approach, True)
-            graph.structure.add_edge(cup_approach, cup_pick_up, True)
+            graph.add_robot_relative_displacement_constraint(corner_approach, corner_pick_up, 0, np.array([0.0, 0.02, 0.0]))
+            graph.add_robot_relative_displacement_constraint(corner_approach, corner_pick_up, 1, np.array([0.0, 0.02, 0.0]))
 
-            # graph.add_robot_to_point_alignment_cost(cup_approach,
-            #                                         1, 1, np.array([0.0, 1.0, 1.0]),
-            #                                         u_body_opt=np.array([1.0, 0.0, 0.0]),
-            #                                         roll_ref_flat=True,
-            #                                         w_flat=1.0)
-            graph.add_robot_relative_rotation_constraint(start_node, cup_approach, 1, RollPitchYaw(3*np.pi/8, 0.0, 0.0).ToQuaternion());
-            graph.add_robot_to_point_displacement_cost(cup_approach, 1, 1, np.array([0.25, 0.0, -0.05]))
+            trivial_phi1 = graph.add_robots_linear_eq(corner_pick_up, np.zeros((1, joint_agent_dim)), np.zeros((1,)))
+            trivial_phi2 = graph.add_robots_linear_eq(corner_pick_up, np.zeros((1, joint_agent_dim)), np.zeros((1,)))
+            graph.add_grasp_change(trivial_phi1, "grab", 0, 0);
+            graph.add_grasp_change(trivial_phi2, "grab", 1, 1);
+            # graph.add_grasp_change(phi1, "grab", 0, 0);
+            # graph.add_grasp_change(phi2, "grab", 1, 1);
+            # corner_pick_up = corner_approach
 
-            graph.add_robot_relative_rotation_constraint(cup_approach, cup_pick_up, 1, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
-            phi2 = graph.add_robot_to_point_displacement_constraint(cup_pick_up, 1, 1, np.array([0.10, 0.00, -0.08]));
-            graph.add_grasp_change(phi2, "grab", 1, 1);
+            # PULL OVER
+            pull_up, put_down = graph.structure.add_nodes(2) 
+            graph.structure.add_edge(corner_pick_up, pull_up, True)
+            graph.structure.add_edge(pull_up, put_down, True)
 
-            # BRING PITCHER AND CUP CLOSE TO EACH OTHER
-            bring_close = graph.structure.add_node()
-            graph.structure.add_edge(pitcher_pick_up, bring_close, True)
-            graph.structure.add_edge(cup_pick_up, bring_close, True)
+            graph.add_robot_relative_rotation_constraint(corner_pick_up, pull_up, 0, RollPitchYaw(0.0, -3*np.pi/8, 0.0).ToQuaternion())
+            graph.add_robot_relative_displacement_constraint(corner_pick_up, pull_up, 0, np.array([0.0, 0.05, 0.20]))
+            # graph.add_robot_to_point_displacement_constraint(pull_up, 0, 2, np.array([0.10, 0.20, -0.50]))
 
-            graph.add_robot_holding_cube_constraint(pitcher_pick_up, bring_close, 0, 0, 0.25);
-            graph.add_robot_holding_cube_constraint(cup_pick_up, bring_close, 1, 1, 0.25);
+            graph.add_robot_relative_rotation_constraint(corner_pick_up, pull_up, 1, RollPitchYaw(0.0, 3*np.pi/8, 0.0).ToQuaternion())
+            graph.add_robot_relative_displacement_constraint(corner_pick_up, pull_up, 1, np.array([0.0, 0.05, 0.20]))
+            # graph.add_robot_to_point_displacement_constraint(pull_up, 1, 3, np.array([-0.10, 0.20, -0.50]))
 
-            graph.add_robot_relative_rotation_constraint(pitcher_pick_up, bring_close, 0, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
-            graph.add_robot_relative_rotation_constraint(cup_pick_up, bring_close, 1, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
+            graph.add_robots_linear_eq(pull_up, np.zeros((1, joint_agent_dim)), np.zeros((1,)))
 
-            graph.add_point_to_point_displacement_cost(bring_close, 0, 1, np.array([-0.1, 0.0, -0.12]));
-            graph.add_point_linear_eq(bring_close, 0, np.array([[0.0, 0.0, 0.0],
-                                                                [0.0, 0.0, 0.0],
-                                                                [0.0, 0.0, 1.0]]), np.array([0.0, 0.0, 0.25]))
+            # AND PUT DOWN
+            graph.add_robot_relative_displacement_constraint(pull_up, put_down, 0, np.array([0.0, 0.18, -0.12]))
+            graph.add_robot_relative_displacement_constraint(pull_up, put_down, 1, np.array([0.0, 0.18, -0.12]))
+            graph.add_robot_relative_rotation_constraint(start_node, put_down, 0, RollPitchYaw(0.0, -1*np.pi/4, 0.0).ToQuaternion())
+            graph.add_robot_relative_rotation_constraint(start_node, put_down, 1, RollPitchYaw(0.0, 1*np.pi/4, 0.0).ToQuaternion())
 
-            # OR OVER ANOTHER POINT IF WANTED:
-            # graph.add_point_to_point_displacement_cost(bring_close, 1, 2, np.array([0.0, -0.08, -0.20]));
-
-            # POUR
-            pour = graph.structure.add_node()
-            graph.structure.add_edge(bring_close, pour, True)
-            graph.add_robot_holding_cube_constraint(bring_close, pour, 0, 0, 0.25);
-            graph.add_robot_holding_cube_constraint(bring_close, pour, 1, 1, 0.25);
-            graph.add_robot_relative_displacement_constraint(bring_close, pour, 1, np.array([0.0, 0.0, 0.0]));
-            graph.add_point_to_point_displacement_cost(pour, 0, 1, np.array([-0.02, 0.0, -0.1]));
-            graph.add_robot_relative_rotation_constraint(bring_close, pour, 0,
-                                                         RollPitchYaw(-np.pi/3, 0.0, 0.0).ToQuaternion());
-            graph.make_node_unpassable(pour)
+            trivial_phi3 = graph.add_robots_linear_eq(put_down, np.zeros((1, joint_agent_dim)), np.zeros((1,)))
+            trivial_phi4 = graph.add_robots_linear_eq(put_down, np.zeros((1, joint_agent_dim)), np.zeros((1,)))
+            graph.add_grasp_change(trivial_phi3, "release", 0, 0);
+            graph.add_grasp_change(trivial_phi4, "release", 1, 1);
 
 
         def do_stack_cubes(graph):
@@ -528,8 +517,8 @@ class GocMpcCartesianNode(Node):
 
 
         # do_stack_cubes_better(graph)
-        # do_pick_and_pour(graph)
-        do_folding(graph)
+        do_pick_and_pour(graph)
+        # do_folding(graph)
 
         # assignable with disturbances?
 
@@ -902,7 +891,8 @@ def main(args=None):
 
         current_datetime = datetime.now()
 
-        results_dir = "experiment_results/stacking_cubes_trial1"
+        # results_dir = "experiment_results/folding_trial1"
+        results_dir = "experiment_results/pick_and_pour_trial1"
         with open(os.path.join(results_dir, f"log_file_{current_datetime}.pkl"), "wb") as f:
             pickle.dump(metrics, f)
 
