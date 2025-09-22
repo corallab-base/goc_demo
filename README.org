@@ -1,3 +1,20 @@
+* To rebuild
+colcon build --packages-skip cartesian_controller_simulation cartesian_controller_tests
+
+* For any control
+ros2 launch goc_demo demo_world_launch.py left_robot_ip:=10.164.8.235 right_robot_ip:=10.164.8.222
+
+* For tracking
 source goc-demo-venv/bin/activate
 ros2 launch goc_demo tracker_with_realsense.launch.py camera_ns:=camera
-ros2 launch goc_demo demo_world_launch.py left_robot_ip:=10.164.8.235 right_robot_ip:=10.164.8.222
+
+** For tweaking the camera
+ros2 run goc_demo interactive_camera_tweaker
+
+* For helper motion handles
+ros2 control switch_controllers --activate left_motion_control_handle right_motion_control_handle
+ros2 control switch_controllers --deactivate left_motion_control_handle right_motion_control_handle
+
+* For goc-mpc
+ros2 run goc_demo goc_cartesian_demo_node --task move_in_circles
+ros2 run goc_demo goc_cartesian_demo_node --task track_above
