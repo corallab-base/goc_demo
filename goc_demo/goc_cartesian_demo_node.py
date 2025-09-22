@@ -42,6 +42,50 @@ WORLD_FRAME = "world"
 Task = namedtuple('Task', ["builder"])
 
 
+def translational_curvature_xyz(X, eps=1e-9):
+    """
+    X: (N, >=3) array of poses; xyz are in columns 0:3.
+    Returns: (N,) curvature array (1/m). Endpoints use one-sided diffs.
+    """
+    P = np.asarray(X)[:, :3]                       # (N,3)
+    N = P.shape[0]
+    if N < 3:
+        return np.zeros(N)
+
+    # Arc length parameter s
+    dP = np.linalg.norm(np.diff(P, axis=0), axis=1)         # (N-1,)
+    s = np.zeros(N)
+    s[1:] = np.cumsum(dP)
+
+    # First derivative dr/ds
+    r_s = np.zeros_like(P)
+    # central differences for interior
+    ds_c = (s[2:] - s[:-2])[:, None]                        # (N-2,1)
+    r_s[1:-1] = (P[2:] - P[:-2]) / np.maximum(ds_c, eps)
+    # one-sided at ends
+    r_s[0]  = (P[1]  - P[0])  / max(s[1]-s[0], eps)
+    r_s[-1] = (P[-1] - P[-2]) / max(s[-1]-s[-2], eps)
+
+    # Second derivative d2r/ds2 (curvature vector)
+    r_ss = np.zeros_like(P)
+    # interior: nonuniform spacing formula via flux form
+    ds_fwd = (s[2:] - s[1:-1])[:, None]                     # (N-2,1)
+    ds_bwd = (s[1:-1] - s[:-2])[:, None]
+    r_ss[1:-1] = 2.0 * ( (P[2:] - P[1:-1]) / np.maximum(ds_fwd, eps)
+                         - (P[1:-1] - P[:-2]) / np.maximum(ds_bwd, eps) ) \
+                         / np.maximum(ds_fwd + ds_bwd, eps)
+    # ends: simple one-sided second diffs
+    r_ss[0]  = (P[2]  - 2*P[1]  + P[0])  / max((s[2]-s[0])*(s[1]-s[0]) + eps, eps)
+    r_ss[-1] = (P[-1] - 2*P[-2] + P[-3]) / max((s[-1]-s[-3])*(s[-1]-s[-2]) + eps, eps)
+
+    # Curvature κ = ||r' × r''|| / ||r'||^3  (with derivatives w.r.t. s)
+    cross = np.cross(r_s, r_ss)                             # (N,3)
+    num = np.linalg.norm(cross, axis=1)
+    den = np.maximum(np.linalg.norm(r_s, axis=1)**3, eps)
+    kappa = num / den
+    return kappa
+
+
 class GocMpcCartesianNode(Node):
     """
     Subscribes to TCP Poses, calls goc_mpc.step(t, x, x_dot), and streams tiny
@@ -164,8 +208,9 @@ class GocMpcCartesianNode(Node):
 
         tasks = {
             "move_in_circles": Task(builder=move_in_circles_builder),
+            "track_above": Task(builder=track_above_builder),
             # "stack_blocks": Task(builder=stack_blocks_builder),
-            # "pick_and_pour": Task(builder=stack_blocks_builder),
+            "pick_and_pour": Task(builder=pick_and_pour_builder),
             # "folding": Task(builder=stack_blocks_builder),
         }
 
@@ -328,50 +373,67 @@ class GocMpcCartesianNode(Node):
             self.get_logger().error(f"goc_mpc.step failed: {e}")
             return
 
+        h, d = xi_h.shape
+        xi_h = xi_h.reshape(h, self.n_agents, d // self.n_agents).transpose(1, 0, 2)
+
         # publish short path for visualization
         self._publish_paths(xi_h)
         self._publish_long_paths(*self.goc_mpc.timing_mpc.view_wps_list())
 
         nodes_and_taus = list(zip(self.goc_mpc.timing_mpc.get_next_nodes(), self.goc_mpc.timing_mpc.get_next_taus()))
-        self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
+        # self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
 
         if len(nodes_and_taus) == 0 and self.end_elapsed_time is None:
             self.end_elapsed_time = t
 
-        target = 4
-        self.fake_time += target * self.goc_mpc.short_path_time_per_step
+        target_min = 3
+        target_max = 5
+        gamma = 16.0
+
+        left_xi_h = xi_h[0]
+        left_curvature = translational_curvature_xyz(left_xi_h)[1]
+        left_radius = 1 / (left_curvature + 0.001)
+        left_target = int(np.clip(gamma * left_radius, target_min, target_max).item())
+        left_target_pose = left_xi_h[left_target]
 
         left_target_pose_stamped = PoseStamped()
         left_target_pose_stamped.header.frame_id = "world"
         left_target_pose_stamped.header.stamp = self.get_clock().now().to_msg()
-        left_target_pose_stamped.pose.position.x = xi_h[target, 0]
-        left_target_pose_stamped.pose.position.y = xi_h[target, 1]
-        left_target_pose_stamped.pose.position.z = xi_h[target, 2]
-        left_target_pose_stamped.pose.orientation.w = xi_h[target, 3]
-        left_target_pose_stamped.pose.orientation.x = xi_h[target, 4]
-        left_target_pose_stamped.pose.orientation.y = xi_h[target, 5]
-        left_target_pose_stamped.pose.orientation.z = xi_h[target, 6]
+        left_target_pose_stamped.pose.position.x = left_target_pose[0]
+        left_target_pose_stamped.pose.position.y = left_target_pose[1]
+        left_target_pose_stamped.pose.position.z = left_target_pose[2]
+        left_target_pose_stamped.pose.orientation.w = left_target_pose[3]
+        left_target_pose_stamped.pose.orientation.x = left_target_pose[4]
+        left_target_pose_stamped.pose.orientation.y = left_target_pose[5]
+        left_target_pose_stamped.pose.orientation.z = left_target_pose[6]
+
+        right_xi_h = xi_h[1]
+        right_curvature = translational_curvature_xyz(right_xi_h)[1]
+        right_radius = 1 / (right_curvature + 0.001)
+        right_target = int(np.clip(gamma * right_radius, target_min, target_max).item())
+        right_target_pose = right_xi_h[right_target]
 
         right_target_pose_stamped = PoseStamped()
         right_target_pose_stamped.header.frame_id = "world"
         right_target_pose_stamped.header.stamp = self.get_clock().now().to_msg()
-        right_target_pose_stamped.pose.position.x = xi_h[target, 7+0]
-        right_target_pose_stamped.pose.position.y = xi_h[target, 7+1]
-        right_target_pose_stamped.pose.position.z = xi_h[target, 7+2]
-        right_target_pose_stamped.pose.orientation.w = xi_h[target, 7+3]
-        right_target_pose_stamped.pose.orientation.x = xi_h[target, 7+4]
-        right_target_pose_stamped.pose.orientation.y = xi_h[target, 7+5]
-        right_target_pose_stamped.pose.orientation.z = xi_h[target, 7+6]
+        right_target_pose_stamped.pose.position.x = right_target_pose[0]
+        right_target_pose_stamped.pose.position.y = right_target_pose[1]
+        right_target_pose_stamped.pose.position.z = right_target_pose[2]
+        right_target_pose_stamped.pose.orientation.w = right_target_pose[3]
+        right_target_pose_stamped.pose.orientation.x = right_target_pose[4]
+        right_target_pose_stamped.pose.orientation.y = right_target_pose[5]
+        right_target_pose_stamped.pose.orientation.z = right_target_pose[6]
 
+        self.fake_time += 4 * self.goc_mpc.short_path_time_per_step
+
+        qpos = np.concatenate((left_target_pose, right_target_pose))
         if self._dry_run:
-            qpos = xi_h[target]
             self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
         else:
-            qpos = xi_h[0]
             self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
 
             if len(self.goc_mpc.last_grasp_commands) > 0:
-                # self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
+                self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
                 for cmd, robot, point in self.goc_mpc.last_grasp_commands:
                     if robot == "free_body_0":
                         side = "left"
@@ -379,11 +441,28 @@ class GocMpcCartesianNode(Node):
                         side = "right"
                     else:
                         continue
+                    self.get_logger().info(f"Paused {side}!")
                     self._pause_robot_delayed(
                         side=side,
                         pre_delay=self._grasp_settle_sec,
                         post_delay=self._grasp_pause_after_cmd_sec,
                         gripper_cmd=cmd
+                    )
+
+            if len(self.goc_mpc.last_cycle_backtracked_phases) > 0:
+                for agent_idx, new_phase in self.goc_mpc.last_cycle_backtracked_phases.items():
+                    if agent_idx == 0:
+                        side = "left"
+                    elif agent_idx == 1:
+                        side = "right"
+                    else:
+                        continue
+                    self.get_logger().info(f"Paused {side}!")
+                    self._pause_robot_delayed(
+                        side=side,
+                        pre_delay=self._grasp_settle_sec,
+                        post_delay=self._grasp_pause_after_cmd_sec,
+                        gripper_cmd="release"
                     )
 
             if not self.left_robot_paused:
@@ -395,9 +474,6 @@ class GocMpcCartesianNode(Node):
     # --- Helpers ---
 
     def _publish_paths(self, xi_h):
-        h, d = xi_h.shape
-        xi_h = xi_h.reshape(h, self.n_agents, d // self.n_agents).transpose(1, 0, 2)
-
         left_xi_h = xi_h[0]
         left_path_msg = Path()
         left_path_msg.header.frame_id = "world"   # or "map", depending on your TF setup
@@ -646,7 +722,7 @@ def main(args=None):
 
         # results_dir = "experiment_results/folding_trial1"
         # results_dir = "experiment_results/pick_and_pour_trial1"
-        results_dir = "experiment_results/block_stacking_trial1"
+        results_dir = "experiment_results/block_stacking_trial2"
         with open(os.path.join(results_dir, f"log_file_{current_datetime}.pkl"), "wb") as f:
             pickle.dump(metrics, f)
 

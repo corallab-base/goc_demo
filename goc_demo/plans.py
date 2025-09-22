@@ -303,7 +303,7 @@ def do_move_in_circles(graph):
     phi2 = graph.add_robots_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
 
 
-def do_remain_over_cube(graph):
+def do_track_above(graph):
     joint_agent_dim = graph.num_agents * graph.dim;
 
     graph.structure.add_nodes(3)
@@ -323,41 +323,15 @@ def do_remain_over_cube(graph):
     graph.make_node_unpassable(2)
 
 
-def do_go_over_cube(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
-
-    graph.structure.add_nodes(4)
-    graph.structure.add_edge(0, 1, True)
-    graph.structure.add_edge(1, 2, True)
-    graph.structure.add_edge(2, 3, True)
-
-    home_position_1 = np.array([0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0,
-                                -0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0])
-    phi0 = graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
-
-    phi1 = graph.add_robot_above_cube_constraint(1, 0, 0, 0.16)
-    graph.add_grasp_change(phi1, "grab", 0, 0);
-
-    goal_position_1 = np.array([0.0, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0,
-                                -0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0])
-    phi2 = graph.add_robots_linear_eq(2, np.eye(joint_agent_dim), goal_position_1)
-
-    goal_position_2 = np.array([0.0, 0.0, 0.2, 0.0, 0.0, 1.0, 0.0,
-                                -0.30, -0.2, 0.5, 0.0, 0.0, 1.0, 0.0])
-    phi3 = graph.add_robots_linear_eq(3, np.eye(joint_agent_dim), goal_position_2)
-    graph.add_grasp_change(phi3, "release", 0, 0);
-
-
 def do_pick_and_pour(graph):
     joint_agent_dim = graph.num_agents * graph.dim;
-
 
     # RESET
     start_node = graph.structure.add_node()
     joint_agent_dim = graph.num_agents * graph.dim;
     home_position_1 = np.array([0.30, -0.2, 0.5, 0.0, -0.70701, -0.70701, 0.0,
                                 -0.30, -0.2, 0.5, 0.0, 0.70701, -0.70701, 0.0])
-    graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
+    graph.add_robots_linear_eq(start_node, np.eye(joint_agent_dim), home_position_1)
 
     # PITCHER
     pitcher_approach, pitcher_pick_up = graph.structure.add_nodes(2)
@@ -371,12 +345,12 @@ def do_pick_and_pour(graph):
     #                                         w_flat=1.0)
     # graph.add_robot_relative_rotation_constraint(start_node, pitcher_approach, 0, RollPitchYaw(np.pi/2, 0.0, 0.0).ToQuaternion());
     graph.add_robot_relative_rotation_constraint(start_node, pitcher_approach, 0, RollPitchYaw(3*np.pi/8, 0.0, 0.0).ToQuaternion());
-    graph.add_robot_to_point_displacement_constraint(pitcher_approach, 0, 0, np.array([-0.20, 0.00, -0.05]));
+    graph.add_robot_to_point_displacement_constraint(pitcher_approach, 0, 0, np.array([-0.20, 0.00, -0.08]));
 
     # graph.make_node_unpassable(pitcher_approach)
 
     graph.add_robot_relative_rotation_constraint(pitcher_approach, pitcher_pick_up, 0, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
-    phi1 = graph.add_robot_to_point_displacement_constraint(pitcher_pick_up, 0, 0, np.array([-0.15, 0.00, -0.04]));
+    phi1 = graph.add_robot_to_point_displacement_constraint(pitcher_pick_up, 0, 0, np.array([-0.14, 0.00, -0.06]));
     graph.add_grasp_change(phi1, "grab", 0, 0);
 
     # CUP
@@ -392,10 +366,10 @@ def do_pick_and_pour(graph):
     graph.add_robot_relative_rotation_constraint(start_node, cup_approach, 1, RollPitchYaw(3*np.pi/8, 0.0, 0.0).ToQuaternion());
     graph.add_robot_to_point_displacement_cost(cup_approach, 1, 1, np.array([0.25, 0.0, -0.04]))
 
-    # graph.make_node_unpassable(cup_approach)
+    # # graph.make_node_unpassable(cup_approach)
 
     graph.add_robot_relative_rotation_constraint(cup_approach, cup_pick_up, 1, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
-    phi2 = graph.add_robot_to_point_displacement_constraint(cup_pick_up, 1, 1, np.array([0.09, 0.00, -0.06]));
+    phi2 = graph.add_robot_to_point_displacement_constraint(cup_pick_up, 1, 1, np.array([0.11, 0.00, -0.06]));
     graph.add_grasp_change(phi2, "grab", 1, 1);
 
     # BRING PITCHER AND CUP CLOSE TO EACH OTHER
@@ -403,8 +377,8 @@ def do_pick_and_pour(graph):
     graph.structure.add_edge(pitcher_pick_up, bring_close, True)
     graph.structure.add_edge(cup_pick_up, bring_close, True)
 
-    graph.add_robot_holding_cube_constraint(pitcher_pick_up, bring_close, 0, 0, 0.25);
-    graph.add_robot_holding_cube_constraint(cup_pick_up, bring_close, 1, 1, 0.25);
+    graph.add_robot_holding_cube_constraint(pitcher_pick_up, bring_close, 0, 0, 0.25, use_l2=True);
+    graph.add_robot_holding_cube_constraint(cup_pick_up, bring_close, 1, 1, 0.25, use_l2=True);
 
     graph.add_robot_relative_rotation_constraint(pitcher_pick_up, bring_close, 0, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
     graph.add_robot_relative_rotation_constraint(cup_pick_up, bring_close, 1, RollPitchYaw(0.0, 0.0, 0.0).ToQuaternion());
@@ -420,13 +394,13 @@ def do_pick_and_pour(graph):
     # POUR
     pour = graph.structure.add_node()
     graph.structure.add_edge(bring_close, pour, True)
-    graph.add_robot_holding_cube_constraint(bring_close, pour, 0, 0, 0.25);
-    graph.add_robot_holding_cube_constraint(bring_close, pour, 1, 1, 0.25);
+    graph.add_robot_holding_cube_constraint(bring_close, pour, 0, 0, 0.25, use_l2=True);
+    graph.add_robot_holding_cube_constraint(bring_close, pour, 1, 1, 0.25, use_l2=True);
     graph.add_robot_relative_displacement_constraint(bring_close, pour, 1, np.array([0.0, 0.0, 0.0]));
     graph.add_point_to_point_displacement_cost(pour, 0, 1, np.array([-0.05, 0.0, -0.1]));
     graph.add_robot_relative_rotation_constraint(bring_close, pour, 0,
                                                  RollPitchYaw(-np.pi/3, 0.0, 0.0).ToQuaternion());
-    # graph.make_node_unpassable(pour)
+    graph.make_node_unpassable(pour)
 
 
 def do_folding(graph):
@@ -657,7 +631,7 @@ def do_stack_cubes_better(graph):
     graph.add_robot_pos_linear_eq(right_safe_pos_node, 1, np.eye(3), right_safe_position);
 
 
-def common_builder(n_points, graph_builder):
+def common_builder(n_points, graph_builder, phi_tolerance=0.03, close_phi_tolerance=0.02, time_delta_cutoff=0.01, close_time_delta_cutoff=0.0):
     env = SimpleDrakeGym(["free_body_0", "free_body_1"], [f"cube_{i}" for i in range(n_points)])
 
     state_lower_bound = -10.0
@@ -672,9 +646,11 @@ def common_builder(n_points, graph_builder):
     # GoC-MPC
     spline_spec = [Block.R(3), Block.SO3()]
     goc_mpc = GraphOfConstraintsMPC(graph, spline_spec,
-                                    time_delta_cutoff = 0.05,
+                                    time_delta_cutoff = time_delta_cutoff,
+                                    close_time_delta_cutoff = close_time_delta_cutoff,
                                     short_path_time_per_step = 0.1,
-                                    phi_tolerance = 0.03)
+                                    phi_tolerance = phi_tolerance,
+                                    close_phi_tolerance = close_phi_tolerance)
                                     # max_vel = 0.05,  # maximum velocity for every joint
                                     # max_acc = 0.05,  # maximum acceleration for every joint
                                     # max_jerk = 0.05) # maximum jerk for every joint
@@ -686,3 +662,13 @@ def common_builder(n_points, graph_builder):
 
 def move_in_circles_builder():
     return common_builder(0, do_move_in_circles)
+
+def track_above_builder():
+    return common_builder(2, do_track_above)
+
+def pick_and_pour_builder():
+    return common_builder(2, do_pick_and_pour,
+                          phi_tolerance=0.06,
+                          close_phi_tolerance=0.03,
+                          time_delta_cutoff=0.4,
+                          close_time_delta_cutoff=0.0)
