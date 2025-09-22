@@ -105,6 +105,8 @@ class GocMpcCartesianNode(Node):
         # --- Visualization Publications ---
         self._left_short_path_publisher = self.create_publisher(Path, "/left_short_path", 10)
         self._right_short_path_publisher = self.create_publisher(Path, "/right_short_path", 10)
+        self._left_long_path_publisher = self.create_publisher(Path, "/left_long_path", 10)
+        self._right_long_path_publisher = self.create_publisher(Path, "/right_long_path", 10)
 
         # --- Subscriptions ---
         self._latest_left_pose: Optional[PoseStamped] = None
@@ -328,6 +330,7 @@ class GocMpcCartesianNode(Node):
 
         # publish short path for visualization
         self._publish_paths(xi_h)
+        self._publish_long_paths(*self.goc_mpc.timing_mpc.view_wps_list())
 
         nodes_and_taus = list(zip(self.goc_mpc.timing_mpc.get_next_nodes(), self.goc_mpc.timing_mpc.get_next_taus()))
         self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
@@ -436,6 +439,48 @@ class GocMpcCartesianNode(Node):
             right_path_msg.poses.append(pose)
 
         self._right_short_path_publisher.publish(right_path_msg)
+
+    def _publish_long_paths(self, left_xi_l, right_xi_l):
+        left_path_msg = Path()
+        left_path_msg.header.frame_id = "world"   # or "map", depending on your TF setup
+        left_path_msg.header.stamp = self.get_clock().now().to_msg()
+
+        for row in left_xi_l:
+            pose = PoseStamped()
+            pose.header = left_path_msg.header
+            # take the first 7 elements of the row (first pose)
+            x, y, z, qw, qx, qy, qz = row[:7]
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            pose.pose.position.z = float(z)
+            pose.pose.orientation.w = float(qw)
+            pose.pose.orientation.x = float(qx)
+            pose.pose.orientation.y = float(qy)
+            pose.pose.orientation.z = float(qz)
+            left_path_msg.poses.append(pose)
+
+        self._left_long_path_publisher.publish(left_path_msg)
+
+        right_path_msg = Path()
+        right_path_msg.header.frame_id = "world"   # or "map", depending on your TF setup
+        right_path_msg.header.stamp = self.get_clock().now().to_msg()
+
+        for row in right_xi_l:
+            pose = PoseStamped()
+            pose.header = right_path_msg.header
+            # take the first 7 elements of the row (first pose)
+            x, y, z, qw, qx, qy, qz = row[:7]
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            pose.pose.position.z = float(z)
+            pose.pose.orientation.w = float(qw)
+            pose.pose.orientation.x = float(qx)
+            pose.pose.orientation.y = float(qy)
+            pose.pose.orientation.z = float(qz)
+            right_path_msg.poses.append(pose)
+
+        self._right_long_path_publisher.publish(right_path_msg)
+
 
     def _do_gripper_cmd(self, side: str, cmd: str):
         try:
