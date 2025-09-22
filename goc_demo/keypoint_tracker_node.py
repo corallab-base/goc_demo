@@ -55,8 +55,8 @@ def numpy_to_imgmsg(img: np.ndarray, frame_id: str, encoding="bgr8") -> Image:
 
 
 # =================== Config (env overrides ok) ===================
-SAM2_CFG   = os.environ.get("SAM2_CFG", "sam2.1_hiera_s.yaml")
-SAM2_CKPT  = str(files(sam2) / "checkpoints" / "sam2.1_hiera_small.pt")
+SAM2_CFG   = os.environ.get("SAM2_CFG", "sam2.1_hiera_l.yaml")
+SAM2_CKPT  = str(files(sam2) / "checkpoints" / "sam2.1_hiera_large.pt")
 DEVICE     = "cuda" if torch.cuda.is_available() else "cpu"
 
 FRAME_CACHE_LIMIT  = 18     # rollover & reseed threshold

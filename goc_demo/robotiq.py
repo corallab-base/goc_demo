@@ -349,12 +349,12 @@ class RobotiqGripper:
         final_obj = cur_obj
         return final_pos, RobotiqGripper.ObjectStatus(final_obj)
 
-    def open(self):
+    def open(self, speed=255, force=255):
         if self.disabled:
             return
 
         min_p = self.get_min_position()
-        return self.move_and_wait_for_pos(min_p, 255, 255)
+        return self.move_and_wait_for_pos(min_p, speed, force)
 
     def slightly_open(self):
         if self.disabled:
@@ -370,12 +370,12 @@ class RobotiqGripper:
         new_p = self.get_current_position() - x
         return self.move_and_wait_for_pos(new_p, 255, 255)
 
-    def close(self):
+    def close(self, speed=255, force=255):
         if self.disabled:
             return
 
         max_p = self.get_max_position()
-        return self.move_and_wait_for_pos(max_p, 255, 255)
+        return self.move_and_wait_for_pos(max_p, speed, force)
 
     def toggle(self):
         min_p = self.get_min_position()

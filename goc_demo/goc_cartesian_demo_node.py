@@ -181,13 +181,13 @@ class GocMpcCartesianNode(Node):
         self.left_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self.left_real_gripper.connect(left_ip_address, 63352)
         self.left_real_gripper.activate(auto_calibrate=False)
-        self.left_real_gripper.open()
+        self.left_real_gripper.open(speed=2, force=2)
 
         right_ip_address = "10.164.8.222"
         self.right_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self.right_real_gripper.connect(right_ip_address, 63352)
         self.right_real_gripper.activate(auto_calibrate=False)
-        self.right_real_gripper.open()
+        self.right_real_gripper.open(speed=2, force=2)
 
         self.left_robot_paused = False
         self.right_robot_paused = False
@@ -387,7 +387,7 @@ class GocMpcCartesianNode(Node):
             self.end_elapsed_time = t
 
         target_min = 3
-        target_max = 5
+        target_max = 3
         gamma = 16.0
 
         left_xi_h = xi_h[0]
@@ -457,11 +457,11 @@ class GocMpcCartesianNode(Node):
                         side = "right"
                     else:
                         continue
-                    self.get_logger().info(f"Paused {side}!")
+                    self.get_logger().info(f"Paused {side} to backtrack!")
                     self._pause_robot_delayed(
                         side=side,
-                        pre_delay=self._grasp_settle_sec,
-                        post_delay=self._grasp_pause_after_cmd_sec,
+                        pre_delay=0.0,
+                        post_delay=0.0,
                         gripper_cmd="release"
                     )
 
@@ -562,9 +562,9 @@ class GocMpcCartesianNode(Node):
         try:
             gr = self.left_real_gripper if side == 'left' else self.right_real_gripper
             if cmd == 'grab':
-                gr.close()
+                gr.close(speed=2, force=2)
             elif cmd == 'release':
-                gr.open()
+                gr.open(speed=2, force=2)
             else:
                 self.get_logger().warn(f"Unknown gripper cmd: {cmd}")
         except Exception as e:
