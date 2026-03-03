@@ -7,7 +7,7 @@ from goc_mpc.goc_mpc import GraphOfConstraints, GraphOfConstraintsMPC
 from goc_mpc.simple_drake_env import SimpleDrakeGym
 # this is where the graph of constrains is created
 
-TIME_DELTA_CUTOFF = 0.7
+TIME_DELTA_CUTOFF = 0.3
 PHI_TOLERANCE = 0.2
 
 # the part where it selects the point in the spline to target, increase
@@ -70,6 +70,7 @@ def common_builder_single(n_points, graph_builder,
         time_delta_cutoff=time_delta_cutoff,
         short_path_time_per_step=0.1,
         phi_tolerance=phi_tolerance,
+        max_acc=1.0,
     )
 
     goc_mpc.reset()

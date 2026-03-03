@@ -377,6 +377,24 @@ class GocMpcCartesianNode(Node):
         h, d_pos = xi_h.shape
         _, d_vel = vi_h.shape
 
+        # WPS VISUALIZATION
+
+        agent_wps = self.goc_mpc.timing_mpc.view_wps_list()[0]
+
+        self._publish_wps(agent_wps)
+
+        # FULL SPLINE VISUALIZATION
+
+        agent_spline = self.goc_mpc.last_cycle_splines[0]
+        begin_time = agent_spline.begin()
+        end_time = agent_spline.end()
+        times = np.linspace(begin_time, end_time, 100)
+        agent_xi_l, _ = agent_spline.eval_multiple(times)
+
+        self._publish_long_path(agent_xi_l)
+
+        # SHORT SPLINE VISUALIZATION
+
         agent_xi_h = xi_h.reshape(h, self.n_agents, d_pos // self.n_agents)[:, 0, :]
         agent_vi_h = vi_h.reshape(h, self.n_agents, d_vel // self.n_agents)[:, 0, :]
 
