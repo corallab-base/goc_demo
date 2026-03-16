@@ -16,6 +16,8 @@ setup(
         # include config and launch files
         (os.path.join('share', package_name, 'urdf'),
          glob(os.path.join('urdf', '*'))),
+        (os.path.join('share', package_name, 'srdf'),
+         glob(os.path.join('srdf', '*'))),
         (os.path.join('share', package_name, 'config'),
          glob(os.path.join('config', '*'))),
         (os.path.join('share', package_name, 'launch'),
