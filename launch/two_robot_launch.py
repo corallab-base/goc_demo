@@ -25,6 +25,7 @@ def generate_launch_description():
     right_robot_ip_arg = DeclareLaunchArgument(
         "right_robot_ip", description="IP address by which the right robot can be reached."
     )
+    launch_rviz_arg = DeclareLaunchArgument("launch_rviz", default_value="true", description="Launch RViz?")
 
     left_robot_ip = LaunchConfiguration("left_robot_ip")
     right_robot_ip = LaunchConfiguration("right_robot_ip")
@@ -75,9 +76,25 @@ def generate_launch_description():
         )
     ])
 
+    launch_rviz = LaunchConfiguration("launch_rviz")
+    rviz_config_file = PathJoinSubstitution(
+        [FindPackageShare("goc_demo"), "config", "view_two_robots.rviz"]
+    )
+
+    rviz_node = Node(
+        package="rviz2",
+        condition=IfCondition(launch_rviz),
+        executable="rviz2",
+        name="rviz2",
+        output="log",
+        arguments=["-d", rviz_config_file],
+    )
+
     return LaunchDescription([
         left_robot_ip_arg,
         right_robot_ip_arg,
+        launch_rviz_arg,
         left_robot_launch,
         right_robot_launch,
+        rviz_node,
     ])

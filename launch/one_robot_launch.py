@@ -72,6 +72,7 @@ def launch_setup(context):
         executable="ros2_control_node",
         remappings=[
             ("motion_control_handle/target_frame", "target_frame"),
+            ("cartesian_motion_controller/target_frame", "target_frame"),
             ("cartesian_compliance_controller/target_frame", "target_frame"),
             ("cartesian_compliance_controller/target_twist", "target_twist"),
         ],
@@ -202,12 +203,11 @@ def launch_setup(context):
         "force_torque_sensor_broadcaster",
         "tcp_pose_broadcaster",
         "ur_configuration_controller",
-        "cartesian_compliance_controller",
+        "scaled_joint_trajectory_controller",
     ]
     controllers_inactive = [
         "motion_control_handle",
         "joint_trajectory_controller",
-        "scaled_joint_trajectory_controller",
         "forward_velocity_controller",
         "forward_position_controller",
         "force_mode_controller",
@@ -216,6 +216,7 @@ def launch_setup(context):
         "tool_contact_controller",
         "cartesian_motion_controller",
         # "cartesian_force_controller",
+        "cartesian_compliance_controller",
     ]
     if activate_joint_controller.perform(context) == "true":
         controller_name = initial_joint_controller.perform(context)
