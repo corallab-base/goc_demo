@@ -55,6 +55,7 @@ def launch_setup(context):
     # General arguments
     controllers_file = LaunchConfiguration("controllers_file")
     description_launchfile = LaunchConfiguration("description_launchfile")
+    description_urdf_file = LaunchConfiguration("description_urdf_file")
     use_mock_hardware = LaunchConfiguration("use_mock_hardware")
     controller_spawner_timeout = LaunchConfiguration("controller_spawner_timeout")
     initial_joint_controller = LaunchConfiguration("initial_joint_controller")
@@ -238,6 +239,7 @@ def launch_setup(context):
         launch_arguments={
             "robot_ip": robot_ip,
             "ur_type": ur_type,
+            "description_file": description_urdf_file,
         }.items(),
     )
 
@@ -326,6 +328,15 @@ def generate_launch_description():
             description="Launchfile (absolute path) providing the description. "
             "The launchfile has to start a robot_state_publisher node that "
             "publishes the description topic.",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "description_urdf_file",
+            default_value=PathJoinSubstitution(
+                [FindPackageShare("goc_demo"), "urdf", "floating_ur.urdf.xacro"]
+            ),
+            description="URDF/XACRO description file with the robot.",
         )
     )
     declared_arguments.append(
