@@ -177,6 +177,8 @@ def launch_setup(context):
         ],
     )
 
+    namespace = context.launch_configurations.get('ros_namespace', "")
+
     # Spawn controllers
     def controller_spawner(controllers, active=True):
         inactive_flags = ["--inactive"] if not active else []
@@ -185,7 +187,7 @@ def launch_setup(context):
             executable="spawner",
             arguments=[
                 "--controller-manager",
-                "/controller_manager",
+                namespace+"/controller_manager",
                 "--controller-manager-timeout",
                 controller_spawner_timeout,
             ]
