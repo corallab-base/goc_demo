@@ -54,6 +54,7 @@ def launch_setup(context):
     robot_ip = LaunchConfiguration("robot_ip")
     # General arguments
     controllers_file = LaunchConfiguration("controllers_file")
+    kinematics_params_file = LaunchConfiguration("kinematics_params_file")
     description_launchfile = LaunchConfiguration("description_launchfile")
     description_urdf_file = LaunchConfiguration("description_urdf_file")
     use_mock_hardware = LaunchConfiguration("use_mock_hardware")
@@ -240,6 +241,7 @@ def launch_setup(context):
             "robot_ip": robot_ip,
             "ur_type": ur_type,
             "description_file": description_urdf_file,
+            "kinematics_params_file": kinematics_params_file
         }.items(),
     )
 
@@ -317,6 +319,20 @@ def generate_launch_description():
                 [FindPackageShare("goc_demo"), "config", "controllers.yaml"]
             ),
             description="YAML file with the controllers configuration.",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "kinematics_params_file",
+            default_value=PathJoinSubstitution(
+                [
+                    FindPackageShare("ur_description"),
+                    "config",
+                    ur_type,
+                    "default_kinematics.yaml",
+                ]
+            ),
+            description="The calibration configuration of the actual robot used.",
         )
     )
     declared_arguments.append(

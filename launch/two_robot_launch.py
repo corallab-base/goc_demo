@@ -41,6 +41,13 @@ def generate_launch_description():
         [FindPackageShare("goc_demo"), "config", "right_controllers.yaml"]
     )
 
+    left_kinematics_params_file = PathJoinSubstitution(
+        [FindPackageShare("goc_demo"), "config", "left_ur5e_kinematics_params.yaml"]
+    )
+    right_kinematics_params_file = PathJoinSubstitution(
+        [FindPackageShare("goc_demo"), "config", "right_ur5e_kinematics_params.yaml"]
+    )
+
     left_robot_launch = GroupAction(actions=[
         PushROSNamespace("left"),
         IncludeLaunchDescription(
@@ -51,6 +58,7 @@ def generate_launch_description():
                 "tf_prefix": "left_",
                 "launch_rviz": "false",
                 "controllers_file": left_controller_params_file,
+                "kinematics_params_file": left_kinematics_params_file,
                 "reverse_port": "50001",
                 "script_sender_port": "50002",
                 "trajectory_port": "50003",
@@ -68,6 +76,7 @@ def generate_launch_description():
                 "tf_prefix": "right_",
                 "launch_rviz": "false",
                 "controllers_file": right_controller_params_file,
+                "kinematics_params_file": right_kinematics_params_file,
                 "reverse_port": "50005",
                 "script_sender_port": "50006",
                 "trajectory_port": "50007",
