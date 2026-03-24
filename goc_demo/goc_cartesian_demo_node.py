@@ -39,7 +39,7 @@ from goc_demo.plans import *
 
 WORLD_FRAME = "world"
 
-Task = namedtuple('Task', ["builder"])
+Task = namedtuple('Task', ["builder", "objects"])
 
 
 def translational_curvature_xyz(X, eps=1e-9):
@@ -162,9 +162,6 @@ class GocMpcCartesianNode(Node):
         self._latest_right_twist: Optional[TwistStamped] = None
         self.create_subscription(TwistStamped, self._right_twist_topic, self._on_right_twist, pose_qos)
 
-        self._latest_keypoints: np.ndarray = np.zeros((0, 3))
-        self.create_subscription(PointCloud, self._keypoints_topic, self._on_keypoints, keypoints_qos)
-
         # Publisher to send the target pose to the robot
         if not self._dry_run:
             left_target_topic_name = "/left_target_frame"
@@ -207,14 +204,34 @@ class GocMpcCartesianNode(Node):
         # --- Controller ---
 
         tasks = {
-            "move_in_circles": Task(builder=move_in_circles_builder),
-            "track_above": Task(builder=track_above_builder),
-            # "stack_blocks": Task(builder=stack_blocks_builder),
-            "pick_and_pour": Task(builder=pick_and_pour_builder),
+            "move_in_circles": Task(builder=move_in_circles_builder,
+                                    objects=[]),
+            "track_above": Task(builder=track_above_builder,
+                                objects=["green", "purple"]),
+            "stack_blocks": Task(builder=stack_blocks_builder,
+                                 objects=["yellow", "red", "blue"]),
+            "pick_and_pour": Task(builder=pick_and_pour_builder,
+                                  objects=["green", "purple"]),
+            "sweater_fold": Task(builder=sweater_fold_builder,
+                                 objects=[]),
             # "folding": Task(builder=stack_blocks_builder),
         }
 
         self.task = tasks[task_name]
+
+        self._latest_positions = {}
+
+        self.subs = []
+        for name in self.task.objects:
+            topic = f'/{name}/projected_centroid'
+            self.get_logger().info(f'Subscribing to {topic}')
+            sub = self.create_subscription(
+                PointStamped, topic,
+                self._make_obj_point_callback(name),
+                keypoints_qos
+            )
+            self.subs.append(sub)
+
         self.n_agents = 2
         self.n_keypoints = 0
         self.goc_mpc = self._setup_goc_mpc(self.task)
@@ -273,15 +290,39 @@ class GocMpcCartesianNode(Node):
         if tw is not None:
             self._latest_right_twist = tw
 
-    def _on_keypoints(self, msg: PointCloud):
-        self._latest_keypoints = np.array([(p.x, p.y, p.z) for p in msg.points])
+    def _make_obj_point_callback(self, name: str):
+
+        def callback(msg: PointStamped):
+            """Transform incoming point into target_frame; store position only."""
+            if not msg.header.frame_id:
+                self.get_logger().warn(f'[{name}] Pose has empty frame_id; ignoring.')
+                return
+
+            try:
+                # Get transform from pose frame to target_frame at the message time
+                tf = self.tf_buffer.lookup_transform(
+                    "world",              # target
+                    msg.header.frame_id,  # source
+                    rclpy.time.Time.from_msg(msg.header.stamp),
+                    # timeout=rclpy.duration.Duration(seconds=0.2)
+                )
+
+                p = do_transform_point(msg, tf).point
+                self._latest_positions[name] = (float(p.x), float(p.y), float(p.z))
+
+            except TransformException as ex:
+                # You might see this until TF is available / connected
+                self.get_logger().debug(f'[{name}] TF error: {ex}')
+
+
+        return callback
 
     def _extract_state(self,
                        left_pose: Pose,
                        left_twist: Twist,
                        right_pose: Pose,
                        right_twist: Twist,
-                       kps: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+                       latest_positions: dict[name, tuple[float, float, float]]) -> Tuple[np.ndarray, np.ndarray]:
 
         def pose_to_arr(pose: Pose):
             return np.array([pose.position.x,
@@ -307,12 +348,18 @@ class GocMpcCartesianNode(Node):
         right_x = pose_to_arr(right_pose)
         right_x_dot = twist_to_arr(right_twist)
 
-        if kps.shape[0] != self.n_keypoints:
-            raise ValueError("Not enough keypoints yet")
+        # if kps.shape[0] != self.n_keypoints:
+        #     raise ValueError(f"Not enough or too many keypoints ({kps.shape[0]} != {self.n_keypoints})")
 
-        kp_x = kps[:self.n_keypoints].flatten()
+        # kp_x = kps[:self.n_keypoints].flatten()
+        # kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
+
+        if any([name not in latest_positions for name in self.task.objects]):
+            raise ValueError(f"Not all objects are found")
+
+        kp_x = np.array([latest_positions[name] for name in self.task.objects]).flatten()
         kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
-        
+
         # x, x_dot
         x = np.concatenate((left_x, right_x, kp_x))
         x_dot = np.concatenate((left_x_dot, right_x_dot, kp_x_dot))
@@ -327,7 +374,7 @@ class GocMpcCartesianNode(Node):
             return
         if self._latest_right_twist is None:
             return
-        if self._latest_keypoints is None:
+        if self._latest_positions is None:
             return
 
         now = self.get_clock().now()
@@ -341,7 +388,7 @@ class GocMpcCartesianNode(Node):
                                                    self._latest_left_twist,
                                                    self._latest_right_pose,
                                                    self._latest_right_twist,
-                                                   self._latest_keypoints)
+                                                   self._latest_positions)
                     self._env._set_controlled_q(x)
                     self._env._set_controlled_qdot(x_dot)
                     self._env.render()
@@ -352,7 +399,7 @@ class GocMpcCartesianNode(Node):
                                                self._latest_left_twist,
                                                self._latest_right_pose,
                                                self._latest_right_twist,
-                                               self._latest_keypoints)
+                                               self._latest_positions)
 
         except Exception as e:
             self.get_logger().warn(f"Bad State: {e}")
