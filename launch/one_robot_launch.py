@@ -328,7 +328,7 @@ def generate_launch_description():
                 [
                     FindPackageShare("ur_description"),
                     "config",
-                    ur_type,
+                    "ur5e",
                     "default_kinematics.yaml",
                 ]
             ),
