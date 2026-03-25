@@ -11,20 +11,29 @@ import pickle
 from datetime import datetime
 
 import rclpy
+from rclpy.time import Time
 from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState, PointCloud
-from geometry_msgs.msg import PoseStamped, TwistStamped, Pose, Twist
+from geometry_msgs.msg import PointStamped, PoseStamped, TwistStamped, Pose, Twist
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from nav_msgs.msg import Path
 from control_msgs.action import FollowJointTrajectory
 from builtin_interfaces.msg import Duration as RosDuration
 
-from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
-from tf2_geometry_msgs import do_transform_pose  # applies TransformStamped to Pose/PoseStamped
+from tf2_ros import (
+    Buffer,
+    TransformListener,
+    TransformException,
+    LookupException,
+    ConnectivityException,
+    ExtrapolationException
+)
+from tf2_geometry_msgs import do_transform_pose_stamped, do_transform_point
+from tf_transformations import quaternion_matrix
 
 from pydrake.math import RollPitchYaw
 from pydrake.common.eigen_geometry import Quaternion
@@ -34,10 +43,17 @@ from goc_mpc.goc_mpc import GraphOfConstraints, GraphOfConstraintsMPC
 from goc_mpc.simple_drake_env import SimpleDrakeGym
 
 from goc_demo import robotiq
-from goc_demo.plans import *
+from goc_demo.plans import (
+    move_in_circles_builder,
+    track_above_builder,
+    dynamic_track_above_builder,
+    # stack_blocks_builder,
+    # pick_and_pour_builder,
+    # sweater_fold_builder,
+)
 
 
-WORLD_FRAME = "world"
+WORLD_FRAME = "left_world"
 
 Task = namedtuple('Task', ["builder", "objects"])
 
@@ -96,10 +112,10 @@ class GocMpcCartesianNode(Node):
         super().__init__("goc_mpc_cartesian_node")
         
         # --- Parameters (your snippet + a couple extra) ---
-        self.declare_parameter("left_pose_topic", "/left_cartesian_motion_controller/current_pose")
-        self.declare_parameter("left_twist_topic", "/left_cartesian_motion_controller/current_twist")
-        self.declare_parameter("right_pose_topic", "/right_cartesian_motion_controller/current_pose")
-        self.declare_parameter("right_twist_topic", "/right_cartesian_motion_controller/current_twist")
+        self.declare_parameter("left_pose_topic", "/left/cartesian_motion_controller/current_pose")
+        self.declare_parameter("left_twist_topic", "/left/cartesian_motion_controller/current_twist")
+        self.declare_parameter("right_pose_topic", "/right/cartesian_motion_controller/current_pose")
+        self.declare_parameter("right_twist_topic", "/right/cartesian_motion_controller/current_twist")
         self.declare_parameter("keypoints_topic", "/demo_world_node/centroids_world")
         self.declare_parameter("rate_hz", 30.0)
         self.declare_parameter("dry_run", False)
@@ -151,6 +167,8 @@ class GocMpcCartesianNode(Node):
         self._right_short_path_publisher = self.create_publisher(Path, "/right_short_path", 10)
         self._left_long_path_publisher = self.create_publisher(Path, "/left_long_path", 10)
         self._right_long_path_publisher = self.create_publisher(Path, "/right_long_path", 10)
+        self._left_waypoints_publisher = self.create_publisher(Path, "/left_waypoints", 10)
+        self._right_waypoints_publisher = self.create_publisher(Path, "/right_waypoints", 10)
 
         # --- Subscriptions ---
         self._latest_left_pose: Optional[PoseStamped] = None
@@ -164,23 +182,32 @@ class GocMpcCartesianNode(Node):
 
         # Publisher to send the target pose to the robot
         if not self._dry_run:
-            left_target_topic_name = "/left_target_frame"
+            # left_target_twist_topic_name = "/left/cartesian_motion_controller/target_twist"
+            # self.left_target_twist_publisher = self.create_publisher(
+            #     TwistStamped, left_target_twist_topic_name, 10
+            # )
+            # right_target_twist_topic_name = "/right/cartesian_motion_controller/target_twist"
+            # self.right_target_twist_publisher = self.create_publisher(
+            #     TwistStamped, right_target_twist_topic_name, 10
+            # )
+
+            left_target_pose_topic_name = "/left/cartesian_motion_controller/target_frame"
             self.left_target_pose_publisher = self.create_publisher(
-                PoseStamped, left_target_topic_name, 10
+                PoseStamped, left_target_pose_topic_name, 10
             )
-            right_target_topic_name = "/right_target_frame"
+            right_target_pose_topic_name = "/right/cartesian_motion_controller/target_frame"
             self.right_target_pose_publisher = self.create_publisher(
-                PoseStamped, right_target_topic_name, 10
+                PoseStamped, right_target_pose_topic_name, 10
             )
 
         # instatiate real grippers (not the cleanest, but has to be done)
-        left_ip_address = "10.164.8.235"
+        left_ip_address = "10.168.4.230"
         self.left_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self.left_real_gripper.connect(left_ip_address, 63352)
         self.left_real_gripper.activate(auto_calibrate=False)
         self.left_real_gripper.open(speed=2, force=2)
 
-        right_ip_address = "10.164.8.222"
+        right_ip_address = "10.168.4.249"
         self.right_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self.right_real_gripper.connect(right_ip_address, 63352)
         self.right_real_gripper.activate(auto_calibrate=False)
@@ -207,13 +234,15 @@ class GocMpcCartesianNode(Node):
             "move_in_circles": Task(builder=move_in_circles_builder,
                                     objects=[]),
             "track_above": Task(builder=track_above_builder,
-                                objects=["green", "purple"]),
-            "stack_blocks": Task(builder=stack_blocks_builder,
-                                 objects=["yellow", "red", "blue"]),
-            "pick_and_pour": Task(builder=pick_and_pour_builder,
-                                  objects=["green", "purple"]),
-            "sweater_fold": Task(builder=sweater_fold_builder,
-                                 objects=[]),
+                                objects=["blue", "green"]),
+            "dynamic_track_above": Task(builder=dynamic_track_above_builder,
+                                objects=["blue", "green"]),
+            # "stack_blocks": Task(builder=stack_blocks_builder,
+            #                      objects=["yellow", "red", "blue"]),
+            # "pick_and_pour": Task(builder=pick_and_pour_builder,
+            #                       objects=["green", "purple"]),
+            # "sweater_fold": Task(builder=sweater_fold_builder,
+            #                      objects=[]),
             # "folding": Task(builder=stack_blocks_builder),
         }
 
@@ -243,7 +272,6 @@ class GocMpcCartesianNode(Node):
         self.short_path_solve_times = []
 
         # --- Timing ---
-        self.fake_time = 0.0
         self._start_time = self.get_clock().now()
         self.end_elapsed_time = None
         self._timer = self.create_timer(self._period_sec, self._on_timer)
@@ -267,25 +295,21 @@ class GocMpcCartesianNode(Node):
 
     # --- Callbacks ---
     def _on_left_pose(self, msg: PoseStamped):
-        # msg is in left_base_link; convert to world
-        pw = self._to_world(msg)
-        if pw is not None:
-            self._latest_left_pose = pw
+        ps_w = self._to_world(msg)
+        if ps_w is not None:
+            self._latest_left_pose = ps_w.pose
 
     def _on_left_twist(self, msg: TwistStamped):
-        # msg is in left_base_link; convert to world
         tw = self._twist_to_world(msg)
         if tw is not None:
             self._latest_left_twist = tw
 
     def _on_right_pose(self, msg: PoseStamped):
-        # msg is in right_base_link; convert to world
-        pw = self._to_world(msg)
-        if pw is not None:
-            self._latest_right_pose = pw
+        ps_w = self._to_world(msg)
+        if ps_w is not None:
+            self._latest_right_pose = ps_w.pose
 
     def _on_right_twist(self, msg: TwistStamped):
-        # msg is in right_base_link; convert to world
         tw = self._twist_to_world(msg)
         if tw is not None:
             self._latest_right_twist = tw
@@ -301,7 +325,7 @@ class GocMpcCartesianNode(Node):
             try:
                 # Get transform from pose frame to target_frame at the message time
                 tf = self.tf_buffer.lookup_transform(
-                    "world",              # target
+                    WORLD_FRAME,          # target
                     msg.header.frame_id,  # source
                     rclpy.time.Time.from_msg(msg.header.stamp),
                     # timeout=rclpy.duration.Duration(seconds=0.2)
@@ -324,22 +348,16 @@ class GocMpcCartesianNode(Node):
                        right_twist: Twist,
                        latest_positions: dict[name, tuple[float, float, float]]) -> Tuple[np.ndarray, np.ndarray]:
 
+        # Only using cartesian position
         def pose_to_arr(pose: Pose):
             return np.array([pose.position.x,
                              pose.position.y,
-                             pose.position.z,
-                             pose.orientation.w,
-                             pose.orientation.x,
-                             pose.orientation.y,
-                             pose.orientation.z])
+                             pose.position.z])
 
         def twist_to_arr(twist: Twist):
             return np.array([twist.linear.x,
                              twist.linear.y,
-                             twist.linear.z,
-                             twist.angular.x,
-                             twist.angular.y,
-                             twist.angular.z])
+                             twist.linear.z])
 
         # Reorder according to self._joints
         left_x = pose_to_arr(left_pose)
@@ -367,18 +385,27 @@ class GocMpcCartesianNode(Node):
 
     def _on_timer(self):
         if self._latest_left_pose is None:
+            self.get_logger().info('_latest_left_pose is None')
             return
         if self._latest_right_pose is None:
+            self.get_logger().info('_latest_right_pose is None')
             return
         if self._latest_left_twist is None:
+            self.get_logger().info('_latest_left_twist is None')
             return
         if self._latest_right_twist is None:
+            self.get_logger().info('_latest_right_twist is None')
             return
         if self._latest_positions is None:
+            self.get_logger().info('_latest_positions is None')
             return
 
         now = self.get_clock().now()
         t = (now - self._start_time).nanoseconds * 1e-9
+
+        #######################################################################
+        #                           GET OBSERVATION                           #
+        #######################################################################
 
         try:
             if self._dry_run:
@@ -405,112 +432,196 @@ class GocMpcCartesianNode(Node):
             self.get_logger().warn(f"Bad State: {e}")
             return
 
-        # MPC step
+        #######################################################################
+        #                               MPC STEP                              #
+        #######################################################################
+
         try:
-            xi_h, _, _ = self.goc_mpc.step(self.fake_time, x, x_dot)
+            xi_h, xi_dot_h, _ = self.goc_mpc.step(t, x, x_dot)
             
             self.waypoint_solve_times.append(self.goc_mpc.waypoint_mpc.get_last_solve_time())
             self.timing_solve_times.append(self.goc_mpc.timing_mpc.get_last_solve_time())
             self.short_path_solve_times.append(self.goc_mpc.short_path_mpc.get_last_solve_time())
-
-            # with open("./goc_mpc_state.pkl", "wb") as f:
-            #     self.goc_mpc.dump(f, x, x_dot)
-            # breakpoint()
-        except Exception as e:
+        except RuntimeError as e:
             self.get_logger().error(f"goc_mpc.step failed: {e}")
+            print(e)
             return
 
-        h, d = xi_h.shape
-        xi_h = xi_h.reshape(h, self.n_agents, d // self.n_agents).transpose(1, 0, 2)
+        h, d_pos = xi_h.shape
+        _, d_vel = xi_dot_h.shape
 
-        # publish short path for visualization
-        self._publish_paths(xi_h)
-        self._publish_long_paths(*self.goc_mpc.timing_mpc.view_wps_list())
+        xi_h = xi_h.reshape(h, self.n_agents, d_pos // self.n_agents)
+        xi_dot_h = xi_dot_h.reshape(h, self.n_agents, d_vel // self.n_agents)
 
-        nodes_and_taus = list(zip(self.goc_mpc.timing_mpc.get_next_nodes(), self.goc_mpc.timing_mpc.get_next_taus()))
-        # self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
+        #######################################################################
+        #                            VISUALIZATION                            #
+        #######################################################################
 
-        if len(nodes_and_taus) == 0 and self.end_elapsed_time is None:
-            self.end_elapsed_time = t
+        # WPS VISUALIZATION
 
-        target_min = 3
-        target_max = 3
-        gamma = 16.0
+        agent_wps = self.goc_mpc.timing_mpc.view_wps_list()
 
-        left_xi_h = xi_h[0]
-        left_curvature = translational_curvature_xyz(left_xi_h)[1]
-        left_radius = 1 / (left_curvature + 0.001)
-        left_target = int(np.clip(gamma * left_radius, target_min, target_max).item())
-        left_target_pose = left_xi_h[left_target]
+        self._publish_paths(
+            self._left_waypoints_publisher, agent_wps[0],
+            self._right_waypoints_publisher, agent_wps[1],
+            pos_only=True,
+        )
+
+        # FULL SPLINE VISUALIZATION
+
+        agent_xi_ls = []
+        for i, side in enumerate(["left", "right"]):
+            agent_spline = self.goc_mpc.last_cycle_splines[i]
+            begin_time = agent_spline.begin()
+            end_time = agent_spline.end()
+            times = np.linspace(begin_time, end_time, 100)
+            agent_xi_l, _ = agent_spline.eval_multiple(times)
+            agent_xi_ls.append(agent_xi_l)
+
+        self._publish_paths(
+            self._left_long_path_publisher, agent_xi_ls[0],
+            self._right_long_path_publisher, agent_xi_ls[1],
+            pos_only=True,
+        )
+
+        # SHORT SPLINE VISUALIZATION
+
+        self._publish_paths(
+            self._left_short_path_publisher, xi_h[:, 0],
+            self._right_short_path_publisher, xi_h[:, 1],
+            pos_only=True,
+        )
+
+        # LOGGING
+
+        nodes_and_taus = list(zip(
+            self.goc_mpc.timing_mpc.get_next_nodes(),
+            self.goc_mpc.timing_mpc.get_next_taus()
+        ))
+
+        # time_deltas_list = self.goc_mpc.timing_mpc.view_time_deltas_list()
+
+        # if nodes_and_taus:
+        #     next_node, next_tau = nodes_and_taus[0]
+        #     near_threshold = 0.15 < next_tau < 0.25
+        #     agent_deltas = time_deltas_list[0] if time_deltas_list else []
+        #     delta_0 = agent_deltas[0] if len(agent_deltas) > 0 else -1
+
+        #     self.get_logger().info(
+        #         f"node={next_node}, tau={next_tau:.3f}, delta[0]={delta_0:.3f}, "
+        #         f"NEAR_THRESH={near_threshold}, remaining={self.goc_mpc.remaining_phases}\n"
+        #         f"Current pos: [{x[0]:.3f}, {x[1]:.3f}, {x[2]:.3f}]\n"
+        #         f"Target waypoint 0: {self.goc_mpc.waypoint_mpc.view_waypoints()[0][:3]}"
+        #     )
+
+        self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
+
+        # if len(nodes_and_taus) == 0 and self.end_elapsed_time is None:
+        #     self.end_elapsed_time = t
+
+        #######################################################################
+        #                            EXECUTE ACTION                           #
+        #######################################################################
+
+        # # 2nd timestep (not current velocity), first agent
+        # left_target_vel = xi_dot_h[1, 0]
+
+        # left_target_twist_stamped = TwistStamped()
+        # left_target_twist_stamped.header.frame_id = WORLD_FRAME
+        # left_target_twist_stamped.header.stamp = self.get_clock().now().to_msg()
+        # left_target_twist_stamped.twist.linear.x = left_target_vel[0]
+        # left_target_twist_stamped.twist.linear.y = left_target_vel[1]
+        # left_target_twist_stamped.twist.linear.z = left_target_vel[2]
+        # left_target_twist_stamped.twist.angular.x = left_target_vel[3]
+        # left_target_twist_stamped.twist.angular.y = left_target_vel[4]
+        # left_target_twist_stamped.twist.angular.z = left_target_vel[5]
+
+        # # 2nd timestep (not current velocity), second agent
+        # right_target_vel = xi_dot_h[1, 1]
+
+        # right_target_twist_stamped = TwistStamped()
+        # right_target_twist_stamped.header.frame_id = WORLD_FRAME
+        # right_target_twist_stamped.header.stamp = self.get_clock().now().to_msg()
+        # right_target_twist_stamped.twist.linear.x = right_target_vel[0]
+        # right_target_twist_stamped.twist.linear.y = right_target_vel[1]
+        # right_target_twist_stamped.twist.linear.z = right_target_vel[2]
+        # right_target_twist_stamped.twist.angular.x = right_target_vel[3]
+        # right_target_twist_stamped.twist.angular.y = right_target_vel[4]
+        # right_target_twist_stamped.twist.angular.z = right_target_vel[5]
+
+        left_target_pose = xi_h[3, 0]
+        right_target_pose = xi_h[3, 1]
 
         left_target_pose_stamped = PoseStamped()
-        left_target_pose_stamped.header.frame_id = "world"
+        left_target_pose_stamped.header.frame_id = WORLD_FRAME
         left_target_pose_stamped.header.stamp = self.get_clock().now().to_msg()
         left_target_pose_stamped.pose.position.x = left_target_pose[0]
         left_target_pose_stamped.pose.position.y = left_target_pose[1]
         left_target_pose_stamped.pose.position.z = left_target_pose[2]
-        left_target_pose_stamped.pose.orientation.w = left_target_pose[3]
-        left_target_pose_stamped.pose.orientation.x = left_target_pose[4]
-        left_target_pose_stamped.pose.orientation.y = left_target_pose[5]
-        left_target_pose_stamped.pose.orientation.z = left_target_pose[6]
-
-        right_xi_h = xi_h[1]
-        right_curvature = translational_curvature_xyz(right_xi_h)[1]
-        right_radius = 1 / (right_curvature + 0.001)
-        right_target = int(np.clip(gamma * right_radius, target_min, target_max).item())
-        right_target_pose = right_xi_h[right_target]
+        left_target_pose_stamped.pose.orientation.w = 0.0
+        left_target_pose_stamped.pose.orientation.x = 0.0
+        left_target_pose_stamped.pose.orientation.y = 1.0
+        left_target_pose_stamped.pose.orientation.z = 0.0
 
         right_target_pose_stamped = PoseStamped()
-        right_target_pose_stamped.header.frame_id = "world"
+        right_target_pose_stamped.header.frame_id = WORLD_FRAME
         right_target_pose_stamped.header.stamp = self.get_clock().now().to_msg()
         right_target_pose_stamped.pose.position.x = right_target_pose[0]
         right_target_pose_stamped.pose.position.y = right_target_pose[1]
         right_target_pose_stamped.pose.position.z = right_target_pose[2]
-        right_target_pose_stamped.pose.orientation.w = right_target_pose[3]
-        right_target_pose_stamped.pose.orientation.x = right_target_pose[4]
-        right_target_pose_stamped.pose.orientation.y = right_target_pose[5]
-        right_target_pose_stamped.pose.orientation.z = right_target_pose[6]
+        right_target_pose_stamped.pose.orientation.w = 0.0
+        right_target_pose_stamped.pose.orientation.x = 0.0
+        right_target_pose_stamped.pose.orientation.y = 1.0
+        right_target_pose_stamped.pose.orientation.z = 0.0
 
-        self.fake_time += 4 * self.goc_mpc.short_path_time_per_step
+        # put in correct frame
+        right_target_pose_stamped = self._to_world(right_target_pose_stamped, target_frame="right_world")
 
-        qpos = np.concatenate((left_target_pose, right_target_pose))
+        # qpos = np.concatenate((left_target_pose, right_target_pose))
         if self._dry_run:
-            self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
+            # self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
+            pass
         else:
-            self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
+            # self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
 
-            if len(self.goc_mpc.last_grasp_commands) > 0:
-                self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
-                for cmd, robot, point in self.goc_mpc.last_grasp_commands:
-                    if robot == "free_body_0":
-                        side = "left"
-                    elif robot == "free_body_1":
-                        side = "right"
-                    else:
-                        continue
-                    self.get_logger().info(f"Paused {side}!")
-                    self._pause_robot_delayed(
-                        side=side,
-                        pre_delay=self._grasp_settle_sec,
-                        post_delay=self._grasp_pause_after_cmd_sec,
-                        gripper_cmd=cmd
-                    )
+            # if len(self.goc_mpc.last_grasp_commands) > 0:
+            #     self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
+            #     for cmd, robot, point in self.goc_mpc.last_grasp_commands:
+            #         if robot == "free_body_0":
+            #             side = "left"
+            #         elif robot == "free_body_1":
+            #             side = "right"
+            #         else:
+            #             continue
+            #         self.get_logger().info(f"Paused {side}!")
+            #         self._pause_robot_delayed(
+            #             side=side,
+            #             pre_delay=self._grasp_settle_sec,
+            #             post_delay=self._grasp_pause_after_cmd_sec,
+            #             gripper_cmd=cmd
+            #         )
 
-            if len(self.goc_mpc.last_cycle_backtracked_phases) > 0:
-                for agent_idx, new_phase in self.goc_mpc.last_cycle_backtracked_phases.items():
-                    if agent_idx == 0:
-                        side = "left"
-                    elif agent_idx == 1:
-                        side = "right"
-                    else:
-                        continue
-                    self.get_logger().info(f"Paused {side} to backtrack!")
-                    self._pause_robot_delayed(
-                        side=side,
-                        pre_delay=0.0,
-                        post_delay=0.0,
-                        gripper_cmd="release"
-                    )
+            # if len(self.goc_mpc.last_cycle_backtracked_phases) > 0:
+            #     for agent_idx, new_phase in self.goc_mpc.last_cycle_backtracked_phases.items():
+            #         if agent_idx == 0:
+            #             side = "left"
+            #         elif agent_idx == 1:
+            #             side = "right"
+            #         else:
+            #             continue
+            #         self.get_logger().info(f"Paused {side} to backtrack!")
+            #         self._pause_robot_delayed(
+            #             side=side,
+            #             pre_delay=0.0,
+            #             post_delay=0.0,
+            #             gripper_cmd="release"
+            #         )
+
+            # if not self.left_robot_paused:
+            #     self.left_target_twist_publisher.publish(left_target_twist_stamped)
+
+            # if not self.right_robot_paused:
+            #     self.right_target_twist_publisher.publish(right_target_twist_stamped)
 
             if not self.left_robot_paused:
                 self.left_target_pose_publisher.publish(left_target_pose_stamped)
@@ -520,17 +631,20 @@ class GocMpcCartesianNode(Node):
 
     # --- Helpers ---
 
-    def _publish_paths(self, xi_h):
-        left_xi_h = xi_h[0]
+    def _publish_paths(self, left_path_pub, left_xi, right_path_pub, right_xi, pos_only=True):
         left_path_msg = Path()
-        left_path_msg.header.frame_id = "world"   # or "map", depending on your TF setup
+        left_path_msg.header.frame_id = WORLD_FRAME   # or "map", depending on your TF setup
         left_path_msg.header.stamp = self.get_clock().now().to_msg()
 
-        for row in left_xi_h:
+        for row in left_xi:
             pose = PoseStamped()
             pose.header = left_path_msg.header
-            # take the first 7 elements of the row (first pose)
-            x, y, z, qw, qx, qy, qz = row[:7]
+            if pos_only:
+                x, y, z = row[:3]
+                qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
+            else:
+                # take the first 7 elements of the row (first pose)
+                x, y, z, qw, qx, qy, qz = row[:7]
             pose.pose.position.x = float(x)
             pose.pose.position.y = float(y)
             pose.pose.position.z = float(z)
@@ -540,18 +654,21 @@ class GocMpcCartesianNode(Node):
             pose.pose.orientation.z = float(qz)
             left_path_msg.poses.append(pose)
 
-        self._left_short_path_publisher.publish(left_path_msg)
+        left_path_pub.publish(left_path_msg)
 
-        right_xi_h = xi_h[1]
         right_path_msg = Path()
-        right_path_msg.header.frame_id = "world"   # or "map", depending on your TF setup
+        right_path_msg.header.frame_id = WORLD_FRAME   # or "map", depending on your TF setup
         right_path_msg.header.stamp = self.get_clock().now().to_msg()
 
-        for row in right_xi_h:
+        for row in right_xi:
             pose = PoseStamped()
             pose.header = right_path_msg.header
-            # take the first 7 elements of the row (first pose)
-            x, y, z, qw, qx, qy, qz = row[:7]
+            if pos_only:
+                x, y, z = row[:3]
+                qw, qx, qy, qz = 0.0, 0.0, 1.0, 0.0
+            else:
+                # take the first 7 elements of the row (first pose)
+                x, y, z, qw, qx, qy, qz = row[:7]
             pose.pose.position.x = float(x)
             pose.pose.position.y = float(y)
             pose.pose.position.z = float(z)
@@ -561,48 +678,7 @@ class GocMpcCartesianNode(Node):
             pose.pose.orientation.z = float(qz)
             right_path_msg.poses.append(pose)
 
-        self._right_short_path_publisher.publish(right_path_msg)
-
-    def _publish_long_paths(self, left_xi_l, right_xi_l):
-        left_path_msg = Path()
-        left_path_msg.header.frame_id = "world"   # or "map", depending on your TF setup
-        left_path_msg.header.stamp = self.get_clock().now().to_msg()
-
-        for row in left_xi_l:
-            pose = PoseStamped()
-            pose.header = left_path_msg.header
-            # take the first 7 elements of the row (first pose)
-            x, y, z, qw, qx, qy, qz = row[:7]
-            pose.pose.position.x = float(x)
-            pose.pose.position.y = float(y)
-            pose.pose.position.z = float(z)
-            pose.pose.orientation.w = float(qw)
-            pose.pose.orientation.x = float(qx)
-            pose.pose.orientation.y = float(qy)
-            pose.pose.orientation.z = float(qz)
-            left_path_msg.poses.append(pose)
-
-        self._left_long_path_publisher.publish(left_path_msg)
-
-        right_path_msg = Path()
-        right_path_msg.header.frame_id = "world"   # or "map", depending on your TF setup
-        right_path_msg.header.stamp = self.get_clock().now().to_msg()
-
-        for row in right_xi_l:
-            pose = PoseStamped()
-            pose.header = right_path_msg.header
-            # take the first 7 elements of the row (first pose)
-            x, y, z, qw, qx, qy, qz = row[:7]
-            pose.pose.position.x = float(x)
-            pose.pose.position.y = float(y)
-            pose.pose.position.z = float(z)
-            pose.pose.orientation.w = float(qw)
-            pose.pose.orientation.x = float(qx)
-            pose.pose.orientation.y = float(qy)
-            pose.pose.orientation.z = float(qz)
-            right_path_msg.poses.append(pose)
-
-        self._right_long_path_publisher.publish(right_path_msg)
+        right_path_pub.publish(right_path_msg)
 
 
     def _do_gripper_cmd(self, side: str, cmd: str):
@@ -696,29 +772,29 @@ class GocMpcCartesianNode(Node):
         else:
             self.get_logger().warn(f"_pause_robot_delayed: unknown side '{side}'")
 
-    def _to_world(self, pose_msg: PoseStamped, timeout_sec: float = 0.05) -> Optional[Pose]:
-        """Transform a PoseStamped from its header.frame_id to WORLD_FRAME."""
+    def _to_world(self, pose_msg: PoseStamped, timeout_sec: float = 0.05, target_frame: str = WORLD_FRAME) -> Optional[PoseStamped]:
+        """Turn a PoseStamped (using its header.frame_id) into a PoseStamped in the target frame."""
         if pose_msg is None:
             return None
         src_frame = pose_msg.header.frame_id
         if not src_frame:
             self.get_logger().warn("Incoming PoseStamped has empty header.frame_id")
             return None
-        if src_frame == WORLD_FRAME:
-            return pose_msg.pose  # already in world
+        if src_frame == target_frame:
+            return pose_msg  # already in target_frame
 
         try:
             # Get transform: target <- source (i.e., world <- src_frame)
             tf: 'TransformStamped' = self.tf_buffer.lookup_transform(
-                WORLD_FRAME,                # target frame
+                target_frame,                # target frame
                 src_frame,                  # source frame
-                pose_msg.header.stamp,      # use the pose time if timestamps are reasonable
+                Time(), # pose_msg.header.stamp,      # use the pose time if timestamps are reasonable
                 timeout=rclpy.duration.Duration(seconds=timeout_sec)
             )
-            pose_world: Pose = do_transform_pose(pose_msg.pose, tf)
+            pose_stamped_world: PoseStamped = do_transform_pose_stamped(pose_msg, tf)
             # pose_world.header.frame_id = WORLD_FRAME  # make sure it says 'world'
             # keep the original timestamp (or set to now() if you prefer)
-            return pose_world
+            return pose_stamped_world
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
             self.get_logger().warn(
                 f"TF transform failed ({WORLD_FRAME} <- {src_frame}) at t={pose_msg.header.stamp.sec}.{pose_msg.header.stamp.nanosec}: {e}"
@@ -727,9 +803,7 @@ class GocMpcCartesianNode(Node):
 
 
     def _twist_to_world(self, twist_msg: TwistStamped, timeout_sec: float = 0.05) -> Optional[Twist]:
-        """
-        Transform a TwistStamped into the world frame.
-        """
+        """Turn a TwistStamped (using its header.frame_id) into a Twist in WORLD_FRAME."""
         if twist_msg is None:
             return None
         src_frame = twist_msg.header.frame_id
@@ -739,7 +813,55 @@ class GocMpcCartesianNode(Node):
         if src_frame == WORLD_FRAME:
             return twist_msg.twist  # already in world
 
-        raise NotImplementedError()
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                WORLD_FRAME,
+                src_frame,
+                Time(), # twist_msg.header.stamp,
+                timeout=rclpy.duration.Duration(seconds=timeout_sec),
+            )
+
+            p = tf.transform.translation
+            q = tf.transform.rotation
+            R = quaternion_matrix([q.x, q.y, q.z, q.w])[:3, :3]
+
+            skew_symmetric_p =  np.array([
+                [ 0,   -p.z,  p.y],
+                [ p.z,  0,   -p.x],
+                [-p.y,  p.x,  0]
+            ])
+
+            adjoint_T_ab = np.concatenate([
+                np.concatenate([R, np.zeros((3,3))], axis=1),
+                np.concatenate([np.matmul(skew_symmetric_p, R), R], axis=1)
+            ], axis=0)
+            
+
+            twist_b = np.array([
+                twist_msg.twist.linear.x,
+                twist_msg.twist.linear.y,
+                twist_msg.twist.linear.z,
+                twist_msg.twist.angular.x,
+                twist_msg.twist.angular.y,
+                twist_msg.twist.angular.z,
+            ])
+
+            twist_a = np.matmul(adjoint_T_ab, twist_b)
+
+            twist_world = Twist()
+            twist_world.linear.x = twist_a[0]
+            twist_world.linear.y = twist_a[1]
+            twist_world.linear.z = twist_a[2]
+            twist_world.angular.x = twist_a[3]
+            twist_world.angular.y = twist_a[4]
+            twist_world.angular.z = twist_a[5]
+            return twist_world
+        except (LookupException, ConnectivityException, ExtrapolationException) as e:
+            self.get_logger().warn(
+                f"TF transform failed ({WORLD_FRAME} <- {src_frame}) at "
+                f"t={twist_msg.header.stamp.sec}.{twist_msg.header.stamp.nanosec}: {e}"
+            )
+            return None
 
 
 def main(args=None):
@@ -769,9 +891,9 @@ def main(args=None):
 
         # results_dir = "experiment_results/folding_trial1"
         # results_dir = "experiment_results/pick_and_pour_trial1"
-        results_dir = "experiment_results/block_stacking_trial2"
-        with open(os.path.join(results_dir, f"log_file_{current_datetime}.pkl"), "wb") as f:
-            pickle.dump(metrics, f)
+        # results_dir = "experiment_results/block_stacking_trial2"
+        # with open(os.path.join(results_dir, f"log_file_{current_datetime}.pkl"), "wb") as f:
+        #     pickle.dump(metrics, f)
 
         node.destroy_node()
         rclpy.shutdown()
