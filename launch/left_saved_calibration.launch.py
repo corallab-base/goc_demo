@@ -9,14 +9,15 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package="goc_demo",
             executable="tf_tweaker",
+            namespace="left",
             output="log",
             arguments=[
                 "--parent",
                 "left_world",
                 "--frame",
                 "camera_color_optical_frame",
-                "--translation", "-1.30206", "-1.29951", "0.519321",
-                "--quaternion", "-0.769982", "0.280968", "-0.207111", "0.534125",
+                "--translation", "-1.62998", "-0.321902", "0.52115",
+                "--quaternion", "-0.568393", "0.58145", "-0.415384", "0.407801",
                 # "--roll",
                 # "1.11791",
                 # "--pitch",
