@@ -32,12 +32,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'goc_demo_node = goc_demo.goc_demo_node:main',
             'goc_cartesian_demo_node = goc_demo.goc_cartesian_demo_node:main',
             'goc_cartesian_demo_node_1_robot = goc_demo.goc_cartesian_demo_node_1_robot:main',
-            'interactive_camera_tweaker = goc_demo.interactive_camera_tweaker:main',
-            'tracker_node = goc_demo.keypoint_tracker_node:main',
-            'demo_world_node = goc_demo.demo_world_node:main',
+            'tf_tweaker = goc_demo.tf_tweaker:main',
         ],
     },
 )
