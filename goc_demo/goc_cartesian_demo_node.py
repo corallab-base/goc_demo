@@ -578,38 +578,38 @@ class GocMpcCartesianNode(Node):
         else:
             # self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
 
-            # if len(self.goc_mpc.last_grasp_commands) > 0:
-            #     self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
-            #     for cmd, robot, point in self.goc_mpc.last_grasp_commands:
-            #         if robot == "free_body_0":
-            #             side = "left"
-            #         elif robot == "free_body_1":
-            #             side = "right"
-            #         else:
-            #             continue
-            #         self.get_logger().info(f"Paused {side}!")
-            #         self._pause_robot_delayed(
-            #             side=side,
-            #             pre_delay=self._grasp_settle_sec,
-            #             post_delay=self._grasp_pause_after_cmd_sec,
-            #             gripper_cmd=cmd
-            #         )
+            if len(self.goc_mpc.last_grasp_commands) > 0:
+                self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
+                for cmd, robot, point in self.goc_mpc.last_grasp_commands:
+                    if robot == "free_body_0" or robot == "point_mass_0":
+                        side = "left"
+                    elif robot == "free_body_1" or robot == "point_mass_1":
+                        side = "right"
+                    else:
+                        continue
+                    self.get_logger().info(f"Paused {side}!")
+                    self._pause_robot_delayed(
+                        side=side,
+                        pre_delay=self._grasp_settle_sec,
+                        post_delay=self._grasp_pause_after_cmd_sec,
+                        gripper_cmd=cmd
+                    )
 
-            # if len(self.goc_mpc.last_cycle_backtracked_phases) > 0:
-            #     for agent_idx, new_phase in self.goc_mpc.last_cycle_backtracked_phases.items():
-            #         if agent_idx == 0:
-            #             side = "left"
-            #         elif agent_idx == 1:
-            #             side = "right"
-            #         else:
-            #             continue
-            #         self.get_logger().info(f"Paused {side} to backtrack!")
-            #         self._pause_robot_delayed(
-            #             side=side,
-            #             pre_delay=0.0,
-            #             post_delay=0.0,
-            #             gripper_cmd="release"
-            #         )
+            if len(self.goc_mpc.last_cycle_backtracked_phases) > 0:
+                for agent_idx, new_phase in self.goc_mpc.last_cycle_backtracked_phases.items():
+                    if agent_idx == 0:
+                        side = "left"
+                    elif agent_idx == 1:
+                        side = "right"
+                    else:
+                        continue
+                    self.get_logger().info(f"Paused {side} to backtrack!")
+                    self._pause_robot_delayed(
+                        side=side,
+                        pre_delay=0.0,
+                        post_delay=0.0,
+                        gripper_cmd="release"
+                    )
 
             # if not self.left_robot_paused:
             #     self.left_target_twist_publisher.publish(left_target_twist_stamped)
@@ -617,10 +617,10 @@ class GocMpcCartesianNode(Node):
             # if not self.right_robot_paused:
             #     self.right_target_twist_publisher.publish(right_target_twist_stamped)
 
-            if not self.left_robot_paused:
+            if not self.left_robot_paused and left_target_pose_stamped is not None:
                 self.left_target_pose_publisher.publish(left_target_pose_stamped)
 
-            if not self.right_robot_paused:
+            if not self.right_robot_paused and right_target_pose_stamped is not None:
                 self.right_target_pose_publisher.publish(right_target_pose_stamped)
 
     # --- Helpers ---
