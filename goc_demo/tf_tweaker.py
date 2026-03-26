@@ -32,6 +32,14 @@ class TfTweakerNode(Node):
         self.current_pose = Pose()
         self.initialized = False
 
+        # Interactive marker server + menu
+        self.server = InteractiveMarkerServer(self, "tf_tweaker_server")
+        self.menu_handler = MenuHandler()
+
+        # Set up our right-click menu options
+        self.menu_handler.insert("1. Publish as Static TF", callback=self._on_menu_publish_static)
+        self.menu_handler.insert("2. Print Current Transform", callback=self._on_menu_print)
+
         if init_trans and init_quat:
             self.current_pose.position.x, self.current_pose.position.y, self.current_pose.position.z = init_trans
             self.current_pose.orientation.x = init_quat[0]
@@ -41,6 +49,8 @@ class TfTweakerNode(Node):
 
             self.initialized = True
             self.get_logger().info("Using user-provided initial transform. Skipping TF lookup.")
+
+            self._make_interactive_marker()
         else:
             # 2. Fallback to dynamic lookup
             self.tf_buffer = Buffer()
@@ -54,14 +64,6 @@ class TfTweakerNode(Node):
         self.is_broadcasting = False
         self.pub_timer = None
 
-        # Interactive marker server + menu
-        self.server = InteractiveMarkerServer(self, "tf_tweaker_server")
-        self.menu_handler = MenuHandler()
-        self._make_interactive_marker()
-
-        # Set up our right-click menu options
-        self.menu_handler.insert("1. Publish as Static TF", callback=self._on_menu_publish_static)
-        self.menu_handler.insert("2. Print Current Transform", callback=self._on_menu_print)
 
     def _try_init_from_tf(self):
         """Polls the TF tree until the target transform is available."""
@@ -158,8 +160,8 @@ class TfTweakerNode(Node):
         if self.pub_timer:
             self.pub_timer.cancel()
 
-        # Start the 30Hz broadcast loop
-        self.pub_timer = self.create_timer(1.0/30.0, self._publish_loop)
+        # Start the 100Hz broadcast loop
+        self.pub_timer = self.create_timer(1.0/100.0, self._publish_loop)
         self.get_logger().info(f"ACTIVE: Now broadcasting {self.parent_frame} -> {self.target_frame}")
 
     def _publish_loop(self):
