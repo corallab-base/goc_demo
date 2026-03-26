@@ -366,7 +366,8 @@ class GocMpcCartesianNode(Node):
         # kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
 
         if any([name not in latest_positions for name in self.task.objects]):
-            raise ValueError(f"Not all objects are found")
+            non_found = list(filter(lambda name: name not in latest_positions, self.task.objects))
+            raise ValueError(f"objects {non_found} are not found")
 
         kp_x = np.array([latest_positions[name] for name in self.task.objects]).flatten()
         kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
