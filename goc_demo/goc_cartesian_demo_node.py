@@ -47,9 +47,7 @@ from goc_demo.plans import (
     move_in_circles_builder,
     track_above_builder,
     dynamic_track_above_builder,
-    # stack_blocks_builder,
-    # pick_and_pour_builder,
-    # sweater_fold_builder,
+    block_arranging_builder,
 )
 
 
@@ -237,13 +235,8 @@ class GocMpcCartesianNode(Node):
                                 objects=["blue", "green"]),
             "dynamic_track_above": Task(builder=dynamic_track_above_builder,
                                 objects=["blue", "green"]),
-            # "stack_blocks": Task(builder=stack_blocks_builder,
-            #                      objects=["yellow", "red", "blue"]),
-            # "pick_and_pour": Task(builder=pick_and_pour_builder,
-            #                       objects=["green", "purple"]),
-            # "sweater_fold": Task(builder=sweater_fold_builder,
-            #                      objects=[]),
-            # "folding": Task(builder=stack_blocks_builder),
+            "arrange_blocks": Task(builder=block_arranging_builder,
+                                 objects=["blue", "red", "green"]),
         }
 
         self.task = tasks[task_name]
@@ -252,7 +245,7 @@ class GocMpcCartesianNode(Node):
 
         self.subs = []
         for name in self.task.objects:
-            topic = f'/{name}/projected_centroid'
+            topic = f'/{name}/center'
             self.get_logger().info(f'Subscribing to {topic}')
             sub = self.create_subscription(
                 PointStamped, topic,
