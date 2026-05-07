@@ -72,12 +72,7 @@ def launch_setup(context):
     control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
-        remappings=[
-            ("motion_control_handle/target_frame", "target_frame"),
-            ("cartesian_motion_controller/target_frame", "target_frame"),
-            ("cartesian_compliance_controller/target_frame", "target_frame"),
-            ("cartesian_compliance_controller/target_twist", "target_twist"),
-        ],
+        remappings=[],
         parameters=[
             LaunchConfiguration("update_rate_config_file"),
             ParameterFile(controllers_file, allow_substs=True),
