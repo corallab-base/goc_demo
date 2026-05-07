@@ -333,11 +333,11 @@ def do_dynamic_track_above(graph):
     phi0 = graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
 
     phi1 = graph.add_assignable_robot_to_point_displacement_constraint(
-        1, r1, 0, np.array([0.0, 0.0, -0.2]))
+        1, r1, 0, np.array([0.0, 0.0, -0.24]))
     graph.make_node_unpassable(1)
 
     phi2 = graph.add_assignable_robot_to_point_displacement_constraint(
-        2, r2, 1, np.array([0.0, 0.0, -0.2]))
+        2, r2, 1, np.array([0.0, 0.0, -0.24]))
     graph.make_node_unpassable(2)
 
 
@@ -357,7 +357,7 @@ def do_block_arranging(graph):
         aligned_phi = graph.add_edge_assignable_robot_to_point_displacement_constraint(
             u=approach, v=pick_up, var=robot, point_id=block,
             disp=np.array([0.0, 0.0, -0.25]),
-            tol=np.array([0.1, 0.1, 0.3]))
+            tol=np.array([0.15, 0.15, 0.3]))
 
         phi = graph.add_assignable_robot_to_point_displacement_constraint(pick_up, robot, block, np.array([0.0, 0.0, -0.17]));
         graph.add_assignable_grasp_change(phi, "grab", block);
@@ -381,14 +381,14 @@ def do_block_arranging(graph):
 
     # grasp and release block 0
     approach_pick_up_0, pick_up_0 = add_grasp(r1, block=0)
-    _, release_0 = add_release(r1, held_block=0, relative_to_block=1, displacement=np.array([-0.15, -0.10, -0.21]))
+    _, release_0 = add_release(r1, held_block=0, relative_to_block=1, displacement=np.array([-0.10, -0.15, -0.21]))
     grasp_phi_0 = graph.add_assignable_robot_holding_point_constraint(pick_up_0, release_0, r1, 0, 0.2);
 
     graph.structure.add_edge(pick_up_0, release_0, True)
 
     # grasp and release block 0
     approach_pick_up_2, pick_up_2 = add_grasp(r2, block=2)
-    _, release_2 = add_release(r2, held_block=2, relative_to_block=1, displacement=np.array([0.15, 0.10, -0.21]))
+    _, release_2 = add_release(r2, held_block=2, relative_to_block=1, displacement=np.array([0.10, 0.15, -0.21]))
     grasp_phi_1 = graph.add_assignable_robot_holding_point_constraint(pick_up_2, release_2, r2, 2, 0.2);
 
     graph.structure.add_edge(pick_up_2, release_2, True)
@@ -414,19 +414,19 @@ def do_block_arranging(graph):
     # when the 0 stacked on 1 edge constraint is violated here, back track all the way to node 0
     arrangedPhi0 = graph.add_edge_point_to_point_displacement_constraint(
         u=release_0, v=left_end, point_a=0, point_b=1,
-        disp=np.array([-0.15, -0.10, 0.0]),
-        tol=np.array([0.2, 0.2, 0.5]))
+        disp=np.array([-0.10, -0.15, 0.0]),
+        tol=np.array([0.25, 0.25, 0.5]))
     arrangedPhi1 = graph.add_edge_point_to_point_displacement_constraint(
         u=release_2, v=left_end, point_a=0, point_b=1,
-        disp=np.array([-0.15, -0.10, 0.0]),
-        tol=np.array([0.2, 0.2, 0.5]))
+        disp=np.array([-0.10, -0.15, 0.0]),
+        tol=np.array([0.25, 0.25, 0.5]))
     graph.add_manual_backtrack_links(arrangedPhi0, [approach_pick_up_0, pick_up_0, release_0])
 
     # when the 2 stacked on 0 edge constraint is violated here, back track all the way to node 2
     arrangedPhi2 = graph.add_edge_point_to_point_displacement_constraint(
         u=release_2, v=right_end, point_a=2, point_b=0,
-        disp=np.array([0.15, 0.10, 0.0]),
-        tol=np.array([0.2, 0.2, 0.5]))
+        disp=np.array([0.10, 0.15, 0.0]),
+        tol=np.array([0.25, 0.25, 0.5]))
     graph.add_manual_backtrack_links(arrangedPhi2, [approach_pick_up_2, pick_up_2, release_2])
 
     # forever attempt to move toward end points so that backtracking can occur as
