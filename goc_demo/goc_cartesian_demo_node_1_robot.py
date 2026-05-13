@@ -18,12 +18,14 @@ from rclpy.duration import Duration
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from rclpy.action import ActionClient
-from sensor_msgs.msg import JointState, PointCloud
+from sensor_msgs.msg import Image, JointState, PointCloud
 from geometry_msgs.msg import PointStamped, PoseStamped, TwistStamped, Pose, Twist
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from nav_msgs.msg import Path
 from control_msgs.action import FollowJointTrajectory
 from builtin_interfaces.msg import Duration as RosDuration
+from cv_bridge import CvBridge
+import cv2
 
 from tf2_ros import (
     Buffer,
@@ -67,10 +69,15 @@ class GocMpcCartesianNode(Node):
         self.declare_parameter("pose_topic", "/cartesian_motion_controller/current_pose")
         self.declare_parameter("twist_topic", "/cartesian_motion_controller/current_twist")
         self.declare_parameter("rate_hz", 30.0)
+        self.declare_parameter('target_img_dim', 128) # Default 224x224
+
+        self.bridge = CvBridge()
 
         # Read params
         self._pose_topic: str = self.get_parameter("pose_topic").value
         self._twist_topic: str = self.get_parameter("twist_topic").value
+
+        self._target_img_dim = self.get_parameter('target_img_dim').get_parameter_value().integer_value
 
         self._rate_hz: float = float(self.get_parameter("rate_hz").value)
 
@@ -112,6 +119,9 @@ class GocMpcCartesianNode(Node):
         self._latest_qd: Optional[np.ndarray] = None
         self._latest_eff: Optional[np.ndarray] = None
         self.create_subscription(JointState, "/joint_states", self._on_joints, pose_qos)
+
+        self._latest_image = None
+        self.create_subscription(Image, '/camera/camera/color/image_raw', self._on_image, 10)
 
         # Publisher to send the target pose to the robot
         target_pose_topic_name = "/cartesian_motion_controller/target_frame"
@@ -209,6 +219,26 @@ class GocMpcCartesianNode(Node):
         if tw is not None:
             self._latest_twist = tw
 
+    def _on_image(self, msg):
+        # 1. Convert ROS Image message to OpenCV format
+        cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = cv_img.shape[:2]
+
+        # 2. Calculate cropping coordinates for a centered square
+        # We find the shortest side to ensure the square fits
+        size = min(h, w)
+        start_x = (w - size) // 2
+        start_y = (h - size) // 2
+
+        # Crop using NumPy slicing: [y1:y2, x1:x2]
+        square_crop = cv_img[start_y:start_y+size, start_x:start_x+size]
+
+        # 3. Downscale to customizable resolution
+        resized_img = cv2.resize(square_crop, (self._target_img_dim, self._target_img_dim), interpolation=cv2.INTER_AREA)
+
+        # Optional: Do something with resized_img (e.g., publish it or run inference)
+        self._latest_image = resized_img
+
     def _make_obj_point_callback(self, name: str):
 
         def callback(msg: PointStamped):
@@ -288,8 +318,24 @@ class GocMpcCartesianNode(Node):
             self.get_logger().info('_latest_eff is None')
             return
 
+        if self._latest_image is None:
+            self.get_logger().info('_latest_image is None')
+            return
+
         if len(self.goc_mpc.remaining_phases) <= 0:
-            self.get_logger().info('Nothing left to do!')
+            self.get_logger().info('Nothing left to do! Manually backtracking everything')
+
+            # TODO: Fix this hack
+            self.goc_mpc = self._setup_goc_mpc(self._task)
+
+            current_datetime = datetime.now()
+            results_dir = "saved_data"
+            with open(os.path.join(results_dir, f"data_{current_datetime}.pkl"), "wb") as f:
+                pickle.dump(self.recorded_data, f)
+
+            del self.recorded_data
+            self.recorded_data = defaultdict(list)
+            
             return
 
         now = self.get_clock().now()
@@ -416,6 +462,8 @@ class GocMpcCartesianNode(Node):
         #######################################################################
 
         # state information ###################################################
+        self.recorded_data["img"].append(self._latest_image)
+
         self.recorded_data["q"].append(self._latest_q)
         self.recorded_data["qd"].append(self._latest_qd)
         self.recorded_data["eff"].append(self._latest_eff)
@@ -423,17 +471,17 @@ class GocMpcCartesianNode(Node):
         self.recorded_data["ee_pos"].append(x[0:3])
         self.recorded_data["ee_quat_wxyz"].append(np.array([0.0, 0.0, 1.0, 0.0]))
         self.recorded_data["ee_vel"].append(x_dot[0:3])
-        # self.recorded_data["gripper_pos"].append(self.right_real_gripper.get_current_position())
+        self.recorded_data["gripper_pos"].append(self._real_gripper.get_current_position())
         for name, pos in self._latest_positions.items():
             self.recorded_data[f"{name}_pos"].append(np.array(pos))
 
         self.recorded_data["action"].append(target_pose - x[0:3])
 
-        # self.get_logger().info(f"remaining phases: {self.goc_mpc.remaining_phases}")
-        reward = len(self.goc_mpc.remaining_phases) == 2 and 6 in self.goc_mpc.remaining_phases and 7 in self.goc_mpc.remaining_phases
-        # self.get_logger().info(f"reward: {reward}")
+        reward = 3 in self.goc_mpc.completed_phases
+        termination = 3 in self.goc_mpc.completed_phases and 5 in self.goc_mpc.completed_phases
+        # self.get_logger().info(f"reward: {reward}, termination: {termination}")
         self.recorded_data["reward"].append(0.0 if reward else -1.0)
-        self.recorded_data["termination"].append(1.0 if reward else 0.0)
+        self.recorded_data["termination"].append(1.0 if termination else 0.0)
 
 
     # --- Helpers ---

@@ -200,9 +200,9 @@ def launch_setup(context):
         "force_torque_sensor_broadcaster",
         "tcp_pose_broadcaster",
         "ur_configuration_controller",
-        "scaled_joint_trajectory_controller",
     ]
     controllers_inactive = [
+        "scaled_joint_trajectory_controller",
         "motion_control_handle",
         "joint_trajectory_controller",
         "forward_velocity_controller",
