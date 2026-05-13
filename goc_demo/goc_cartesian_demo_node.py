@@ -6,6 +6,7 @@ import argparse
 import numpy as np
 from typing import List, Optional, Tuple, Sequence, Union
 from collections import namedtuple
+from collections import defaultdict
 
 import pickle
 from datetime import datetime
@@ -178,6 +179,16 @@ class GocMpcCartesianNode(Node):
         self._latest_right_twist: Optional[TwistStamped] = None
         self.create_subscription(TwistStamped, self._right_twist_topic, self._on_right_twist, pose_qos)
 
+        self._latest_left_q: Optional[np.ndarray] = None
+        self._latest_left_qd: Optional[np.ndarray] = None
+        self._latest_left_eff: Optional[np.ndarray] = None
+        self.create_subscription(JointState, "/left/joint_states", self._on_left_joints, pose_qos)
+        self._latest_right_q: Optional[np.ndarray] = None
+        self._latest_right_qd: Optional[np.ndarray] = None
+        self._latest_right_eff: Optional[np.ndarray] = None
+        self.create_subscription(JointState, "/right/joint_states", self._on_right_joints, pose_qos)
+
+
         # Publisher to send the target pose to the robot
         if not self._dry_run:
             # left_target_twist_topic_name = "/left/cartesian_motion_controller/target_twist"
@@ -202,13 +213,13 @@ class GocMpcCartesianNode(Node):
         left_ip_address = "10.168.4.230"
         self.left_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self.left_real_gripper.connect(left_ip_address, 63352)
-        self.left_real_gripper.activate(auto_calibrate=False)
+        self.left_real_gripper.activate(auto_calibrate=True)
         self.left_real_gripper.open(speed=2, force=2)
 
         right_ip_address = "10.168.4.249"
         self.right_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self.right_real_gripper.connect(right_ip_address, 63352)
-        self.right_real_gripper.activate(auto_calibrate=False)
+        self.right_real_gripper.activate(auto_calibrate=True)
         self.right_real_gripper.open(speed=2, force=2)
 
         self.left_robot_paused = False
@@ -276,6 +287,8 @@ class GocMpcCartesianNode(Node):
             f"Streaming pose goals at {self._rate_hz:.1f} Hz"
         )
 
+        self.recorded_data = defaultdict(list)
+
     def _setup_goc_mpc(self, task):
         env, graph, goc_mpc = task.builder()
 
@@ -287,6 +300,16 @@ class GocMpcCartesianNode(Node):
         return goc_mpc
 
     # --- Callbacks ---
+    def _on_left_joints(self, msg: JointState):
+        self._latest_left_q = np.array(msg.position)
+        self._latest_left_qd = np.array(msg.velocity)
+        self._latest_left_eff = np.array(msg.effort)
+
+    def _on_right_joints(self, msg: JointState):
+        self._latest_right_q = np.array(msg.position)
+        self._latest_right_qd = np.array(msg.velocity)
+        self._latest_right_eff = np.array(msg.effort)
+
     def _on_left_pose(self, msg: PoseStamped):
         ps_w = self._to_world(msg)
         if ps_w is not None:
@@ -320,7 +343,7 @@ class GocMpcCartesianNode(Node):
                 tf = self.tf_buffer.lookup_transform(
                     WORLD_FRAME,          # target
                     msg.header.frame_id,  # source
-                    rclpy.time.Time.from_msg(msg.header.stamp),
+                    Time(), # rclpy.time.Time.from_msg(msg.header.stamp),
                     # timeout=rclpy.duration.Duration(seconds=0.2)
                 )
 
@@ -392,6 +415,30 @@ class GocMpcCartesianNode(Node):
             return
         if self._latest_positions is None:
             self.get_logger().info('_latest_positions is None')
+            return
+
+        if self._latest_left_q is None:
+            self.get_logger().info('_latest_left_q is None')
+            return
+        if self._latest_left_qd is None:
+            self.get_logger().info('_latest_left_qd is None')
+            return
+        if self._latest_left_eff is None:
+            self.get_logger().info('_latest_left_eff is None')
+            return
+
+        if self._latest_right_q is None:
+            self.get_logger().info('_latest_right_q is None')
+            return
+        if self._latest_right_qd is None:
+            self.get_logger().info('_latest_right_qd is None')
+            return
+        if self._latest_right_eff is None:
+            self.get_logger().info('_latest_right_eff is None')
+            return
+
+        if len(self.goc_mpc.remaining_phases) <= 0:
+            self.get_logger().info('Nothing left to do!')
             return
 
         now = self.get_clock().now()
@@ -623,6 +670,39 @@ class GocMpcCartesianNode(Node):
             if not self.right_robot_paused and right_target_pose_stamped is not None:
                 self.right_target_pose_publisher.publish(right_target_pose_stamped)
 
+        #######################################################################
+        #                              RECORDING                              #
+        #######################################################################
+
+        # state information ###################################################
+        self.recorded_data["left_q"].append(self._latest_left_q)
+        self.recorded_data["left_qd"].append(self._latest_left_qd)
+        self.recorded_data["left_eff"].append(self._latest_left_eff)
+        self.recorded_data["right_q"].append(self._latest_right_q)
+        self.recorded_data["right_qd"].append(self._latest_right_qd)
+        self.recorded_data["right_eff"].append(self._latest_right_eff)
+
+        self.recorded_data["left_ee_pos"].append(x[0:3])
+        self.recorded_data["left_ee_quat_wxyz"].append(np.array([0.0, 0.0, 1.0, 0.0]))
+        self.recorded_data["left_ee_vel"].append(x_dot[0:3])
+        self.recorded_data["left_gripper_pos"].append(self.left_real_gripper.get_current_position())
+        self.recorded_data["right_ee_pos"].append(x[3:6])
+        self.recorded_data["right_ee_quat_wxyz"].append(np.array([0.0, 0.0, 1.0, 0.0]))
+        self.recorded_data["right_ee_vel"].append(x_dot[3:6])
+        self.recorded_data["right_gripper_pos"].append(self.right_real_gripper.get_current_position())
+        for name, pos in self._latest_positions.items():
+            self.recorded_data[f"{name}_pos"].append(np.array(pos))
+
+        self.recorded_data["left_action"].append(left_target_pose - x[0:3])
+        self.recorded_data["right_action"].append(right_target_pose - x[3:6])
+
+        # self.get_logger().info(f"remaining phases: {self.goc_mpc.remaining_phases}")
+        reward = len(self.goc_mpc.remaining_phases) == 2 and 6 in self.goc_mpc.remaining_phases and 7 in self.goc_mpc.remaining_phases
+        # self.get_logger().info(f"reward: {reward}")
+        self.recorded_data["reward"].append(0.0 if reward else -1.0)
+        self.recorded_data["termination"].append(1.0 if reward else 0.0)
+
+
     # --- Helpers ---
 
     def _publish_paths(self, left_path_pub, left_xi, right_path_pub, right_xi, pos_only=True):
@@ -679,9 +759,9 @@ class GocMpcCartesianNode(Node):
         try:
             gr = self.left_real_gripper if side == 'left' else self.right_real_gripper
             if cmd == 'grab':
-                gr.close(speed=2, force=2)
+                gr.close(speed=200, force=2)
             elif cmd == 'release':
-                gr.open(speed=2, force=2)
+                gr.open(speed=200, force=2)
             else:
                 self.get_logger().warn(f"Unknown gripper cmd: {cmd}")
         except Exception as e:
@@ -766,7 +846,7 @@ class GocMpcCartesianNode(Node):
         else:
             self.get_logger().warn(f"_pause_robot_delayed: unknown side '{side}'")
 
-    def _to_world(self, pose_msg: PoseStamped, timeout_sec: float = 0.05, target_frame: str = WORLD_FRAME) -> Optional[PoseStamped]:
+    def _to_world(self, pose_msg: PoseStamped, timeout_sec: float = 0.1, target_frame: str = WORLD_FRAME) -> Optional[PoseStamped]:
         """Turn a PoseStamped (using its header.frame_id) into a PoseStamped in the target frame."""
         if pose_msg is None:
             return None
@@ -780,9 +860,9 @@ class GocMpcCartesianNode(Node):
         try:
             # Get transform: target <- source (i.e., world <- src_frame)
             tf: 'TransformStamped' = self.tf_buffer.lookup_transform(
-                target_frame,                # target frame
+                target_frame,               # target frame
                 src_frame,                  # source frame
-                Time(), # pose_msg.header.stamp,      # use the pose time if timestamps are reasonable
+                Time(), # pose_msg.header.stamp,      # Time(), # use the pose time if timestamps are reasonable
                 timeout=rclpy.duration.Duration(seconds=timeout_sec)
             )
             pose_stamped_world: PoseStamped = do_transform_pose_stamped(pose_msg, tf)
@@ -874,20 +954,11 @@ def main(args=None):
         pass
     finally:
 
-        metrics = {
-            "total_time": node.end_elapsed_time,
-            "waypoint_solve_times": node.waypoint_solve_times,
-            "timing_solve_times": node.timing_solve_times,
-            "short_path_solve_times": node.short_path_solve_times,
-        }
-
         current_datetime = datetime.now()
 
-        # results_dir = "experiment_results/folding_trial1"
-        # results_dir = "experiment_results/pick_and_pour_trial1"
-        # results_dir = "experiment_results/block_stacking_trial2"
-        # with open(os.path.join(results_dir, f"log_file_{current_datetime}.pkl"), "wb") as f:
-        #     pickle.dump(metrics, f)
+        results_dir = "saved_data"
+        with open(os.path.join(results_dir, f"data_{current_datetime}.pkl"), "wb") as f:
+            pickle.dump(node.recorded_data, f)
 
         node.destroy_node()
         rclpy.shutdown()
