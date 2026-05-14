@@ -36,7 +36,7 @@ from tf2_ros import (
     ExtrapolationException
 )
 from tf2_geometry_msgs import do_transform_pose_stamped, do_transform_point
-from tf_transformations import quaternion_matrix
+from tf_transformations import quaternion_matrix, euler_from_quaternion, quaternion_from_euler
 
 from pydrake.math import RollPitchYaw
 from pydrake.common.eigen_geometry import Quaternion
@@ -49,12 +49,14 @@ from goc_demo import robotiq
 from goc_demo.plans import (
     one_robot_move_in_circles_builder,
     pick_and_place_builder,
+    test_yaw_builder,
+    move_spam_builder,
 )
 
 
 WORLD_FRAME = "world"
 
-Task = namedtuple('Task', ["builder", "objects"])
+Task = namedtuple('Task', ["builder", "points", "objects", "needs_yaw"])
 
 
 class GocMpcCartesianNode(Node):
@@ -92,13 +94,7 @@ class GocMpcCartesianNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
 
         # --- Sub/Pub QoS ---
-        pose_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
-
-        keypoints_qos = QoSProfile(
+        best_effort_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
@@ -111,17 +107,17 @@ class GocMpcCartesianNode(Node):
 
         # --- Subscriptions ---
         self._latest_pose: Optional[PoseStamped] = None
-        self.create_subscription(PoseStamped, self._pose_topic, self._on_pose, pose_qos)
+        self.create_subscription(PoseStamped, self._pose_topic, self._on_pose, best_effort_qos)
         self._latest_twist: Optional[TwistStamped] = None
-        self.create_subscription(TwistStamped, self._twist_topic, self._on_twist, pose_qos)
+        self.create_subscription(TwistStamped, self._twist_topic, self._on_twist, best_effort_qos)
 
         self._latest_q: Optional[np.ndarray] = None
         self._latest_qd: Optional[np.ndarray] = None
         self._latest_eff: Optional[np.ndarray] = None
-        self.create_subscription(JointState, "/joint_states", self._on_joints, pose_qos)
+        self.create_subscription(JointState, "/joint_states", self._on_joints, best_effort_qos)
 
-        self._latest_image = None
-        self.create_subscription(Image, '/camera/camera/color/image_raw', self._on_image, 10)
+        # self._latest_image = None
+        # self.create_subscription(Image, '/camera/camera/color/image_raw', self._on_image, 10)
 
         # Publisher to send the target pose to the robot
         target_pose_topic_name = "/cartesian_motion_controller/target_frame"
@@ -150,23 +146,36 @@ class GocMpcCartesianNode(Node):
         # --- Controller ---
 
         tasks = {
-            "move_in_circles": Task(builder=one_robot_move_in_circles_builder, objects=[]),
-            "pick_and_place": Task(builder=pick_and_place_builder,
-                                   objects=["green", "red"]),
+            "move_in_circles": Task(builder=one_robot_move_in_circles_builder, points=[], objects=[], needs_yaw=False),
+            "pick_and_place": Task(builder=pick_and_place_builder, points=["green", "red"], objects=[], needs_yaw=False),
+            "test_yaw": Task(builder=test_yaw_builder, points=[], objects=[], needs_yaw=True),
+            "move_spam": Task(builder=move_spam_builder, points=[], objects=["spam"], needs_yaw=True),
         }
 
         self._task = tasks[task_name]
+        self._needs_yaw = self._task.needs_yaw
 
         self._latest_positions = {}
+        self._latest_poses = {}
 
         self.subs = []
-        for name in self._task.objects:
+        for name in self._task.points:
             topic = f'/{name}/center'
             self.get_logger().info(f'Subscribing to {topic}')
             sub = self.create_subscription(
                 PointStamped, topic,
                 self._make_obj_point_callback(name),
-                keypoints_qos
+                best_effort_qos
+            )
+            self.subs.append(sub)
+
+        for name in self._task.objects:
+            topic = f'/{name}/pose'
+            self.get_logger().info(f'Subscribing to {topic}')
+            sub = self.create_subscription(
+                PoseStamped, topic,
+                self._make_obj_pose_callback(name),
+                best_effort_qos
             )
             self.subs.append(sub)
 
@@ -219,25 +228,25 @@ class GocMpcCartesianNode(Node):
         if tw is not None:
             self._latest_twist = tw
 
-    def _on_image(self, msg):
-        # 1. Convert ROS Image message to OpenCV format
-        cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-        h, w = cv_img.shape[:2]
+    # def _on_image(self, msg):
+    #     # 1. Convert ROS Image message to OpenCV format
+    #     cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+    #     h, w = cv_img.shape[:2]
 
-        # 2. Calculate cropping coordinates for a centered square
-        # We find the shortest side to ensure the square fits
-        size = min(h, w)
-        start_x = (w - size) // 2
-        start_y = (h - size) // 2
+    #     # 2. Calculate cropping coordinates for a centered square
+    #     # We find the shortest side to ensure the square fits
+    #     size = min(h, w)
+    #     start_x = (w - size) // 2
+    #     start_y = (h - size) // 2
 
-        # Crop using NumPy slicing: [y1:y2, x1:x2]
-        square_crop = cv_img[start_y:start_y+size, start_x:start_x+size]
+    #     # Crop using NumPy slicing: [y1:y2, x1:x2]
+    #     square_crop = cv_img[start_y:start_y+size, start_x:start_x+size]
 
-        # 3. Downscale to customizable resolution
-        resized_img = cv2.resize(square_crop, (self._target_img_dim, self._target_img_dim), interpolation=cv2.INTER_AREA)
+    #     # 3. Downscale to customizable resolution
+    #     resized_img = cv2.resize(square_crop, (self._target_img_dim, self._target_img_dim), interpolation=cv2.INTER_AREA)
 
-        # Optional: Do something with resized_img (e.g., publish it or run inference)
-        self._latest_image = resized_img
+    #     # Optional: Do something with resized_img (e.g., publish it or run inference)
+    #     self._latest_image = resized_img
 
     def _make_obj_point_callback(self, name: str):
 
@@ -266,31 +275,80 @@ class GocMpcCartesianNode(Node):
 
         return callback
 
+    def _make_obj_pose_callback(self, name: str):
+
+        def callback(msg: PoseStamped):
+            """Transform incoming pose into target_frame; store pose."""
+            if not msg.header.frame_id:
+                self.get_logger().warn(f'[{name}] Pose has empty frame_id; ignoring.')
+                return
+
+            try:
+                # Get transform from pose frame to target_frame at the message time
+                tf = self.tf_buffer.lookup_transform(
+                    WORLD_FRAME,          # target
+                    msg.header.frame_id,  # source
+                    Time(), # rclpy.time.Time.from_msg(msg.header.stamp),
+                    # timeout=rclpy.duration.Duration(seconds=0.2)
+                )
+
+                p = do_transform_pose_stamped(msg, tf).pose
+                if self._needs_yaw:
+                    yaw = self._quat_to_yaw(p.orientation)
+                    self._latest_poses[name] = (float(p.position.x),
+                                                float(p.position.y),
+                                                float(p.position.z),
+                                                float(yaw))
+                else:
+                    self._latest_poses[name] = (float(p.position.x),
+                                                float(p.position.y),
+                                                float(p.position.z),
+                                                float(p.orientation.w),
+                                                float(p.orientation.x),
+                                                float(p.orientation.y),
+                                                float(p.orientation.z))
+
+            except TransformException as ex:
+                # You might see this until TF is available / connected
+                self.get_logger().debug(f'[{name}] TF error: {ex}')
+
+        return callback
+
+
     def _extract_state(self,
                        pose: Pose,
                        twist: Twist,
                        latest_positions: dict[name, tuple[float, float, float]]) -> Tuple[np.ndarray, np.ndarray]:
 
-        # Only using cartesian position
         def pose_to_arr(pose: Pose):
-            return np.array([pose.position.x,
-                             pose.position.y,
-                             pose.position.z])
+            arr = np.array([pose.position.x,
+                            pose.position.y,
+                            pose.position.z])
+            if self._needs_yaw:
+                yaw = self._quat_to_yaw(pose.orientation)
+                arr = np.append(arr, yaw)
+            return arr
 
         def twist_to_arr(twist: Twist):
-            return np.array([twist.linear.x,
-                             twist.linear.y,
-                             twist.linear.z])
+            arr = np.array([twist.linear.x,
+                            twist.linear.y,
+                            twist.linear.z])
+            if self._needs_yaw:
+                arr = np.append(arr, 0.0)  # yaw_dot not available
+            return arr
 
         x = pose_to_arr(pose)
         x_dot = twist_to_arr(twist)
 
-        if any([name not in latest_positions for name in self._task.objects]):
-            non_found = list(filter(lambda name: name not in latest_positions, self._task.objects))
-            raise ValueError(f"objects {non_found} are not found")
+        if any([name not in latest_positions for name in self._task.points]):
+            non_found = list(filter(lambda name: name not in latest_positions, self._task.points))
+            raise ValueError(f"points {non_found} are not found")
 
-        kp_x = np.array([latest_positions[name] for name in self._task.objects]).flatten()
-        kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
+        kp_x = np.array([latest_positions[name] for name in self._task.points]).flatten()
+        if self._needs_yaw:
+            kp_x_dot = np.zeros((self.n_keypoints, 4)).flatten()
+        else:
+            kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
 
         # x, x_dot
         x = np.concatenate((x, kp_x))
@@ -307,6 +365,9 @@ class GocMpcCartesianNode(Node):
         if self._latest_positions is None:
             self.get_logger().info('_latest_positions is None')
             return
+        if self._latest_poses is None:
+            self.get_logger().info('_latest_poses is None')
+            return
 
         if self._latest_q is None:
             self.get_logger().info('_latest_q is None')
@@ -318,9 +379,9 @@ class GocMpcCartesianNode(Node):
             self.get_logger().info('_latest_eff is None')
             return
 
-        if self._latest_image is None:
-            self.get_logger().info('_latest_image is None')
-            return
+        # if self._latest_image is None:
+        #     self.get_logger().info('_latest_image is None')
+        #     return
 
         if len(self.goc_mpc.remaining_phases) <= 0:
             self.get_logger().info('Nothing left to do! Manually backtracking everything')
@@ -430,10 +491,19 @@ class GocMpcCartesianNode(Node):
         target_pose_stamped.pose.position.x = target_pose[0]
         target_pose_stamped.pose.position.y = target_pose[1]
         target_pose_stamped.pose.position.z = target_pose[2]
-        target_pose_stamped.pose.orientation.w = 0.0
-        target_pose_stamped.pose.orientation.x = 0.0
-        target_pose_stamped.pose.orientation.y = 1.0
-        target_pose_stamped.pose.orientation.z = 0.0
+
+        if self._needs_yaw:
+            yaw = target_pose[3]
+            qw, qx, qy, qz = self._yaw_to_quat(yaw)
+            target_pose_stamped.pose.orientation.w = qw
+            target_pose_stamped.pose.orientation.x = qx
+            target_pose_stamped.pose.orientation.y = qy
+            target_pose_stamped.pose.orientation.z = qz
+        else:
+            target_pose_stamped.pose.orientation.w = 0.0
+            target_pose_stamped.pose.orientation.x = 0.0
+            target_pose_stamped.pose.orientation.y = 1.0
+            target_pose_stamped.pose.orientation.z = 0.0
 
         if len(self.goc_mpc.last_grasp_commands) > 0:
             self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
@@ -469,13 +539,29 @@ class GocMpcCartesianNode(Node):
         self.recorded_data["eff"].append(self._latest_eff)
 
         self.recorded_data["ee_pos"].append(x[0:3])
-        self.recorded_data["ee_quat_wxyz"].append(np.array([0.0, 0.0, 1.0, 0.0]))
+        if self._needs_yaw:
+            ee_yaw = self._quat_to_yaw(self._latest_pose.orientation)
+            self.recorded_data["ee_yaw"].append(ee_yaw)
+            qw, qx, qy, qz = self._yaw_to_quat(ee_yaw)
+            self.recorded_data["ee_quat_wxyz"].append(np.array([qw, qx, qy, qz]))
+        else:
+            self.recorded_data["ee_quat_wxyz"].append(np.array([0.0, 0.0, 1.0, 0.0]))
+
         self.recorded_data["ee_vel"].append(x_dot[0:3])
         self.recorded_data["gripper_pos"].append(self._real_gripper.get_current_position())
         for name, pos in self._latest_positions.items():
             self.recorded_data[f"{name}_pos"].append(np.array(pos))
 
-        self.recorded_data["action"].append(target_pose - x[0:3])
+        if self._needs_yaw:
+            action = target_pose[0:3] - x[0:3]
+            action_yaw = target_pose[3] - x[3]
+            self.recorded_data["action"].append(np.concatenate([action, [action_yaw]]))
+            for name, pose in self._latest_poses.items():
+                self.recorded_data[f"{name}_pose"].append(np.array(pose))
+        else:
+            self.recorded_data["action"].append(target_pose - x[0:3])
+            for name, pose in self._latest_poses.items():
+                self.recorded_data[f"{name}_pose"].append(np.array(pose))
 
         reward = 3 in self.goc_mpc.completed_phases
         termination = 3 in self.goc_mpc.completed_phases and 5 in self.goc_mpc.completed_phases
@@ -485,6 +571,16 @@ class GocMpcCartesianNode(Node):
 
 
     # --- Helpers ---
+
+    def _quat_to_yaw(self, quat):
+        """Extract yaw (rotation around z-axis) from quaternion (x, y, z, w)."""
+        roll, pitch, yaw = euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])
+        return yaw
+
+    def _yaw_to_quat(self, yaw):
+        """Convert yaw angle to quaternion (w, x, y, z) with zero roll and pitch."""
+        qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, yaw)
+        return (qw, qx, qy, qz)
 
     def _publish_paths(self, path_pub, xi, pos_only=True):
         path_msg = Path()

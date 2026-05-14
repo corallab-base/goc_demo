@@ -107,12 +107,35 @@ def do_pick_and_place(graph):
     # graph.add_manual_backtrack_links(arrangedPhi0, [approach_pick_up_0, pick_up_0, release_0])
 
 
-def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_delta_cutoff=TIME_DELTA_CUTOFF):
+def do_test_yaw(graph):
+    joint_agent_dim = graph.num_agents * graph.dim;
+
+    graph.structure.add_nodes(3)
+    graph.structure.add_edge(0, 1, True)
+    graph.structure.add_edge(1, 2, True)
+
+    triangle_origin = np.array([-0.5, 0.0, 0.5, 0.0])
+
+    goal_position_1 = triangle_origin + np.array([0.0, 0.1, 0.0, 0.0])
+    phi0 = graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+
+    goal_position_2 = triangle_origin + np.array([0.0, -0.1, 0.0, 0.5])
+    phi1 = graph.add_robots_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
+
+    home_position_1 = triangle_origin + np.array([0.0, 0.0, 0.1, -0.5])
+    phi2 = graph.add_robots_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
+
+
+def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_delta_cutoff=TIME_DELTA_CUTOFF, needs_yaw=False):
     state_lower_bound = -10.0
     state_upper_bound = 10.0
 
-    robot_spec = [Block.R(3)]
-    object_spec = [Block.R(3)]
+    if needs_yaw:
+        robot_spec = [Block.R(3), Block.Torus(1)]
+        object_spec = [Block.R(3), Block.Torus(1)]
+    else:
+        robot_spec = [Block.R(3)]
+        object_spec = [Block.R(3)]
 
     graph = GraphOfConstraints([robot_spec], [object_spec for i in range(n_points)],
                                state_lower_bound, state_upper_bound,
@@ -144,3 +167,9 @@ def move_in_circles_builder():
 
 def pick_and_place_builder():
     return common_builder(2, do_pick_and_place)
+
+def test_yaw_builder():
+    return common_builder(0, do_test_yaw, needs_yaw=True)
+
+def move_spam_builder():
+    return common_builder(2, do_pick_and_place, needs_yaw=True)
