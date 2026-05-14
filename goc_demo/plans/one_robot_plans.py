@@ -1,21 +1,8 @@
 import os
-import time
-import imageio
 import numpy as np
-import mujoco as mj
-import matplotlib.pyplot as plt
-
-from mujoco import viewer
-
-from pydrake.math import RollPitchYaw
-from pydrake.geometry import Meshcat
-from pydrake.common.eigen_geometry import Quaternion
 
 from goc_mpc.splines import Block
-from goc_mpc.systems import OnePointMassEnv
 from goc_mpc.goc_mpc import GraphOfConstraints, GraphOfConstraintsMPC
-from goc_mpc.utils.mesh_cat_mirror import MeshCatMirror
-from goc_mpc.simple_drake_env import SimpleDrakeGym
 
 
 TIME_DELTA_CUTOFF = 0.3
