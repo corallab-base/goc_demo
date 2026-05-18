@@ -105,8 +105,50 @@ def do_pick_and_place(graph):
     # go home again
     go_home_1 = graph.structure.add_node()
     graph.structure.add_edge(back_off_1, go_home_1, True)
+
+    home_offset = np.random.standard_normal((3,)) * np.array([0.1, 0.1, 0.07])
+    home = np.array([-0.5, 0.0, 0.5]) + home_offset
+    print(f"SAMPLED FOR HOME: {home}")
+
     graph.add_robot_pos_linear_eq(
-        k=go_home_1, robot_id=robot_id, A=np.eye(3), b=np.array([-0.5, 0.0, 0.5]))
+        k=go_home_1, robot_id=robot_id, A=np.eye(3), b=home)
+
+
+    # grasp and release block 0
+    approach_pick_up_0, pick_up_0 = add_grasp(block=0)
+    approach_release_0, release_0, back_off_0 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.10, 0.0, -0.24]))
+    grasp_phi_0 = graph.add_robot_holding_cube_constraint(pick_up_0, approach_release_0, robot_id, 0, 0.30);
+
+    graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
+
+    graph.structure.add_edge(pick_up_0, approach_release_0, True)
+
+    # go home
+    go_home_0 = graph.structure.add_node()
+    graph.structure.add_edge(back_off_0, go_home_0, True)
+    graph.add_robot_pos_linear_eq(
+        k=go_home_0, robot_id=robot_id, A=np.eye(3), b=np.array([-0.5, 0.0, 0.5]))
+
+    # grasp and release block 0 again
+    approach_pick_up_1, pick_up_1 = add_grasp(block=0)
+    graph.structure.add_edge(go_home_0, approach_pick_up_1, True)
+    approach_release_1, release_1, back_off_1 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.30, 0.0, -0.23]), randomize=True)
+    grasp_phi_1 = graph.add_robot_holding_cube_constraint(pick_up_1, release_1, robot_id, 0, 0.30);
+
+    graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
+
+    graph.structure.add_edge(pick_up_1, approach_release_1, True)
+
+    # go home again
+    go_home_1 = graph.structure.add_node()
+    graph.structure.add_edge(back_off_1, go_home_1, True)
+
+    home_offset = np.random.standard_normal((3,)) * np.array([0.1, 0.1, 0.07])
+    home = np.array([-0.5, 0.0, 0.5]) + home_offset
+    print(f"SAMPLED FOR HOME: {home}")
+
+    graph.add_robot_pos_linear_eq(
+        k=go_home_1, robot_id=robot_id, A=np.eye(3), b=home)
 
     # graph.make_node_unpassable(go_home_1)
     # graph.add_manual_backtrack_links(arrangedPhi0, [approach_pick_up_0, pick_up_0, release_0])
@@ -139,9 +181,107 @@ def do_yaw_track_above(graph):
     graph.add_constraint(
         node,
         eq(graph.agent_q(0),
-           graph.object_q(0) + np.array([0.0, 0.0, 0.3, 0.0]))
+           graph.object_q(0) + np.array([0.0, 0.0, 0.3, 0]))
     )
     graph.make_node_unpassable(node)
+
+
+def do_move_spam(graph):
+    joint_agent_dim = graph.num_agents * graph.dim;
+    robot_id = 0
+
+    def add_grasp(block):
+        approach, pick_up = graph.structure.add_nodes(2)
+        graph.structure.add_edge(approach, pick_up, True)
+
+        graph.add_constraint(
+            approach,
+            eq(graph.agent_q(robot_id),
+               graph.object_q(block) + np.array([0.0, 0.0, 0.3, 0.0]))
+        )
+
+        phi = graph.add_constraint(
+            pick_up,
+            eq(graph.agent_q(robot_id),
+               graph.object_q(block) + np.array([0.0, 0.0, 0.18, 0.0]))
+        )
+        graph.add_grasp_change(phi, "grab", robot_id, block);
+
+        return approach, pick_up
+
+    def add_release(held_block, position, randomize=False):
+        approach, release, back_off = graph.structure.add_nodes(3)
+        graph.structure.add_edge(approach, release, True)
+        graph.structure.add_edge(release, back_off, True)
+
+        if randomize:
+            offset = np.random.standard_normal((4,)) * np.array([0.07, 0.07, 0.0, np.pi/4])
+            position = position + offset
+            print(f"SAMPLED FOR INIT: {position}")
+
+        graph.add_constraint(
+            approach,
+            eq(graph.agent_q(robot_id),
+               position + np.array([0.0, 0.0, 0.1, 0.0]))
+        )
+
+        phi = graph.add_constraint(
+            release,
+            eq(graph.agent_q(robot_id),
+               position)
+        )
+
+        graph.add_grasp_change(phi, "release", robot_id, held_block)
+
+        graph.add_constraint(
+            back_off,
+            eq(graph.agent_q(robot_id),
+               position + np.array([0.0, 0.0, 0.1, 0.0]))
+        )
+
+        return approach, release, back_off
+
+    # grasp and release block 0
+    approach_pick_up_0, pick_up_0 = add_grasp(block=0)
+    approach_release_0, release_0, back_off_0 = add_release(held_block=0, position=np.array([-0.7, 0.0, 0.24, 0.0]))
+    graph.structure.add_edge(pick_up_0, approach_release_0, True)
+
+    grasp_phi_0 = graph.add_robot_holding_cube_constraint(pick_up_0, approach_release_0, robot_id, 0, 0.30);
+
+    graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
+
+
+    # go home
+    go_home_0 = graph.structure.add_node()
+    graph.structure.add_edge(back_off_0, go_home_0, True)
+
+    phi = graph.add_constraint(
+        go_home_0,
+        eq(graph.agent_q(0), np.array([-0.5, 0.0, 0.5, 0.0]))
+    )
+
+    # grasp and release block 0 again
+    approach_pick_up_1, pick_up_1 = add_grasp(block=0)
+    graph.structure.add_edge(go_home_0, approach_pick_up_1, True)
+    approach_release_1, release_1, back_off_1 = add_release(held_block=0, position=np.array([-0.45, 0.0, 0.24, 0.0]), randomize=True)
+    graph.structure.add_edge(pick_up_1, approach_release_1, True)
+
+    grasp_phi_1 = graph.add_robot_holding_cube_constraint(pick_up_1, release_1, robot_id, 0, 0.30);
+
+    graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
+
+    # go home again
+    go_home_1 = graph.structure.add_node()
+    graph.structure.add_edge(back_off_1, go_home_1, True)
+
+    home_offset = np.random.standard_normal((4,)) * np.array([0.1, 0.1, 0.07, np.pi/4])
+    home = np.array([-0.5, 0.0, 0.5, 0.0]) + home_offset
+    print(f"SAMPLED FOR HOME: {home}")
+
+    graph.add_constraint(
+        go_home_1,
+        eq(graph.agent_q(0), home)
+    )
 
 
 def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_delta_cutoff=TIME_DELTA_CUTOFF, needs_yaw=False):
@@ -198,4 +338,4 @@ def yaw_track_above_builder():
     return common_builder(1, do_yaw_track_above, needs_yaw=True)
 
 def move_spam_builder():
-    return common_builder(2, do_pick_and_place, needs_yaw=True)
+    return common_builder(1, do_move_spam, needs_yaw=True)
