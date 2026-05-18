@@ -172,7 +172,7 @@ class GocMpcCartesianNode(Node):
             self.subs.append(sub)
 
         for name in self._task.objects:
-            topic = f'/{name}/pose'
+            topic = f'/{name}/center_pose'
             self.get_logger().info(f'Subscribing to {topic}')
             sub = self.create_subscription(
                 PoseStamped, topic,
@@ -182,7 +182,6 @@ class GocMpcCartesianNode(Node):
             self.subs.append(sub)
 
         self.n_agents = 1
-        # self.n_keypoints = 0
         self.goc_mpc = self._setup_goc_mpc(self._task)
         self._obs = None
 
@@ -207,10 +206,6 @@ class GocMpcCartesianNode(Node):
 
     def _setup_goc_mpc(self, task):
         graph, goc_mpc = task.builder()
-
-        self.n_keypoints = graph.num_objects
-
-        self.get_logger().info(f"n_keypoints: {self.n_keypoints}")
 
         return goc_mpc
 
@@ -320,7 +315,8 @@ class GocMpcCartesianNode(Node):
     def _extract_state(self,
                        pose: Pose,
                        twist: Twist,
-                       latest_positions: dict[name, tuple[float, float, float]]) -> Tuple[np.ndarray, np.ndarray]:
+                       latest_positions: dict[name, tuple[float, float, float]],
+                       latest_poses: dict[name, any]) -> Tuple[np.ndarray, np.ndarray]:
 
         def pose_to_arr(pose: Pose):
             arr = np.array([pose.position.x,
@@ -352,9 +348,15 @@ class GocMpcCartesianNode(Node):
         else:
             kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
 
+        obj_x = np.array([latest_poses[name] for name in self._task.objects]).flatten()
+        if self._needs_yaw:
+            obj_x_dot = np.zeros((self.n_objects, 4)).flatten()
+        else:
+            obj_x_dot = np.zeros((self.n_objects, 3)).flatten()
+
         # x, x_dot
-        x = np.concatenate((x, kp_x))
-        x_dot = np.concatenate((x_dot, kp_x_dot))
+        x = np.concatenate((x, kp_x, obj_x))
+        x_dot = np.concatenate((x_dot, kp_x_dot, obj_x_dot))
         return x, x_dot
 
     def _on_timer(self):
@@ -381,9 +383,9 @@ class GocMpcCartesianNode(Node):
             self.get_logger().info('_latest_eff is None')
             return
 
-        # if self._latest_image is None:
-        #     self.get_logger().info('_latest_image is None')
-        #     return
+        if self._latest_image is None:
+            self.get_logger().info('_latest_image is None')
+            return
 
         if len(self.goc_mpc.remaining_phases) <= 0:
             self.get_logger().info('Nothing left to do! Manually backtracking everything')
@@ -411,7 +413,8 @@ class GocMpcCartesianNode(Node):
         try:
             x, x_dot = self._extract_state(self._latest_pose,
                                            self._latest_twist,
-                                           self._latest_positions)
+                                           self._latest_positions,
+                                           self._latest_poses)
         except Exception as e:
             self.get_logger().warn(f"Bad State: {e}")
             return
