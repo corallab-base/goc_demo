@@ -50,6 +50,7 @@ from goc_demo.plans import (
     one_robot_move_in_circles_builder,
     pick_and_place_builder,
     test_yaw_builder,
+    yaw_track_above_builder,
     move_spam_builder,
 )
 
@@ -149,6 +150,7 @@ class GocMpcCartesianNode(Node):
             "move_in_circles": Task(builder=one_robot_move_in_circles_builder, points=[], objects=[], needs_yaw=False),
             "pick_and_place": Task(builder=pick_and_place_builder, points=["green", "red"], objects=[], needs_yaw=False),
             "test_yaw": Task(builder=test_yaw_builder, points=[], objects=[], needs_yaw=True),
+            "yaw_track_above": Task(builder=yaw_track_above_builder, points=[], objects=["spam"], needs_yaw=True),
             "move_spam": Task(builder=move_spam_builder, points=[], objects=["spam"], needs_yaw=True),
         }
 

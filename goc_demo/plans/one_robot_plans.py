@@ -2,7 +2,12 @@ import os
 import numpy as np
 
 from goc_mpc.splines import Block
-from goc_mpc.goc_mpc import GraphOfConstraints, GraphOfConstraintsMPC
+from goc_mpc import (
+    GraphOfConstraints, GraphOfConstraintsMPC,
+    WaypointSolver, WaypointObjective
+)
+
+from pydrake.math import eq
 
 
 TIME_DELTA_CUTOFF = 0.3
@@ -126,6 +131,19 @@ def do_test_yaw(graph):
     phi2 = graph.add_robots_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
 
 
+def do_yaw_track_above(graph):
+    joint_agent_dim = graph.num_agents * graph.dim;
+
+    node = graph.structure.add_node()
+
+    graph.add_constraint(
+        node,
+        eq(graph.agent_q(0),
+           graph.object_q(0) + np.array([0.0, 0.0, 0.3, 0.0]))
+    )
+    graph.make_node_unpassable(node)
+
+
 def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_delta_cutoff=TIME_DELTA_CUTOFF, needs_yaw=False):
     state_lower_bound = -10.0
     state_upper_bound = 10.0
@@ -146,8 +164,13 @@ def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_de
     graph_builder(graph)
 
     # GoC-MPC
-    spline_spec = [Block.R(3)]
+    spline_spec = robot_spec
     goc_mpc = GraphOfConstraintsMPC(graph, spline_spec,
+                                    # for waypoint solver:
+                                    waypoint_solver = WaypointSolver.kGurobi,
+                                    waypoint_objective = WaypointObjective.kL1 if needs_yaw else WaypointObjective.kSquaredDistance,
+                                    waypoint_enforce_rigidity = False,
+                                    # for timing solver:
                                     time_delta_cutoff = time_delta_cutoff,
                                     short_path_time_per_step = 0.1,
                                     phi_tolerance = phi_tolerance,
@@ -170,6 +193,9 @@ def pick_and_place_builder():
 
 def test_yaw_builder():
     return common_builder(0, do_test_yaw, needs_yaw=True)
+
+def yaw_track_above_builder():
+    return common_builder(1, do_yaw_track_above, needs_yaw=True)
 
 def move_spam_builder():
     return common_builder(2, do_pick_and_place, needs_yaw=True)
