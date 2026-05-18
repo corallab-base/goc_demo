@@ -203,7 +203,7 @@ def do_move_spam(graph):
         phi = graph.add_constraint(
             pick_up,
             eq(graph.agent_q(robot_id),
-               graph.object_q(block) + np.array([0.0, 0.0, 0.18, 0.0]))
+               graph.object_q(block) + np.array([0.0, 0.0, 0.16, 0.0]))
         )
         graph.add_grasp_change(phi, "grab", robot_id, block);
 
@@ -215,7 +215,7 @@ def do_move_spam(graph):
         graph.structure.add_edge(release, back_off, True)
 
         if randomize:
-            offset = np.random.standard_normal((4,)) * np.array([0.07, 0.07, 0.0, np.pi/4])
+            offset = np.random.standard_normal((4,)) * np.array([0.05, 0.05, 0.0, np.pi/4])
             position = position + offset
             print(f"SAMPLED FOR INIT: {position}")
 
@@ -263,7 +263,7 @@ def do_move_spam(graph):
     # grasp and release block 0 again
     approach_pick_up_1, pick_up_1 = add_grasp(block=0)
     graph.structure.add_edge(go_home_0, approach_pick_up_1, True)
-    approach_release_1, release_1, back_off_1 = add_release(held_block=0, position=np.array([-0.45, 0.0, 0.24, 0.0]), randomize=True)
+    approach_release_1, release_1, back_off_1 = add_release(held_block=0, position=np.array([-0.42, 0.0, 0.24, 0.0]), randomize=True)
     graph.structure.add_edge(pick_up_1, approach_release_1, True)
 
     grasp_phi_1 = graph.add_robot_holding_cube_constraint(pick_up_1, release_1, robot_id, 0, 0.30);
@@ -274,7 +274,7 @@ def do_move_spam(graph):
     go_home_1 = graph.structure.add_node()
     graph.structure.add_edge(back_off_1, go_home_1, True)
 
-    home_offset = np.random.standard_normal((4,)) * np.array([0.1, 0.1, 0.07, np.pi/4])
+    home_offset = np.random.standard_normal((4,)) * np.array([0.05, 0.05, 0.02, np.pi/4])
     home = np.array([-0.5, 0.0, 0.5, 0.0]) + home_offset
     print(f"SAMPLED FOR HOME: {home}")
 
@@ -289,8 +289,8 @@ def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_de
     state_upper_bound = 10.0
 
     if needs_yaw:
-        robot_spec = [Block.R(3), Block.Torus(1)]
-        object_spec = [Block.R(3), Block.Torus(1)]
+        robot_spec = [Block.R(4)]
+        object_spec = [Block.R(4)]
     else:
         robot_spec = [Block.R(3)]
         object_spec = [Block.R(3)]
