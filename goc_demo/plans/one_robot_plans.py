@@ -189,6 +189,7 @@ def do_yaw_track_above(graph):
 def do_move_spam(graph):
     joint_agent_dim = graph.num_agents * graph.dim;
     robot_id = 0
+    grasp_distance_limit = 0.26
 
     def add_grasp(block):
         approach, pick_up = graph.structure.add_nodes(2)
@@ -246,7 +247,7 @@ def do_move_spam(graph):
     approach_release_0, release_0, back_off_0 = add_release(held_block=0, position=np.array([-0.7, 0.0, 0.24, 0.0]))
     graph.structure.add_edge(pick_up_0, approach_release_0, True)
 
-    grasp_phi_0 = graph.add_robot_holding_cube_constraint(pick_up_0, approach_release_0, robot_id, 0, 0.30);
+    grasp_phi_0 = graph.add_robot_holding_cube_constraint(pick_up_0, approach_release_0, robot_id, 0, grasp_distance_limit);
 
     graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
 
@@ -266,7 +267,7 @@ def do_move_spam(graph):
     approach_release_1, release_1, back_off_1 = add_release(held_block=0, position=np.array([-0.42, 0.0, 0.24, 0.0]), randomize=True)
     graph.structure.add_edge(pick_up_1, approach_release_1, True)
 
-    grasp_phi_1 = graph.add_robot_holding_cube_constraint(pick_up_1, release_1, robot_id, 0, 0.30);
+    grasp_phi_1 = graph.add_robot_holding_cube_constraint(pick_up_1, release_1, robot_id, 0, grasp_distance_limit);
 
     graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
 
@@ -317,7 +318,7 @@ def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_de
                                     # max_vel = 0.05,  # maximum velocity for every joint
                                     max_acc = 1.00,  # maximum acceleration for every joint
                                     # max_jerk = 0.05 # maximum jerk for every joint
-                                    )
+                                    linear_interpolation = True)
 
     goc_mpc.reset()
 
