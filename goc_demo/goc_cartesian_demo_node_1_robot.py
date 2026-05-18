@@ -71,7 +71,7 @@ class GocMpcCartesianNode(Node):
         # --- Parameters (your snippet + a couple extra) ---
         self.declare_parameter("pose_topic", "/cartesian_motion_controller/current_pose")
         self.declare_parameter("twist_topic", "/cartesian_motion_controller/current_twist")
-        self.declare_parameter("rate_hz", 30.0)
+        self.declare_parameter("rate_hz", 10.0)
         self.declare_parameter('target_img_dim', 128) # Default 224x224
 
         self.bridge = CvBridge()
@@ -85,8 +85,8 @@ class GocMpcCartesianNode(Node):
         self._rate_hz: float = float(self.get_parameter("rate_hz").value)
 
         if self._rate_hz <= 0.0:
-            self.get_logger().warn("rate_hz must be > 0; defaulting to 100.0")
-            self._rate_hz = 100.0
+            self.get_logger().warn("rate_hz must be > 0; defaulting to 10.0")
+            self._rate_hz = 10.0
 
         self._period_sec = 1.0 / self._rate_hz
 
@@ -584,7 +584,7 @@ class GocMpcCartesianNode(Node):
 
     def _yaw_to_quat(self, yaw):
         """Convert yaw angle to quaternion (w, x, y, z) with zero roll and pitch."""
-        qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, yaw)
+        qx, qy, qz, qw = quaternion_from_euler(-np.pi, 0.0, yaw)
         return (qw, qx, qy, qz)
 
     def _publish_paths(self, path_pub, xi, pos_only=True):
