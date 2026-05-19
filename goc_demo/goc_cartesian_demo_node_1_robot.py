@@ -117,8 +117,8 @@ class GocMpcCartesianNode(Node):
         self._latest_eff: Optional[np.ndarray] = None
         self.create_subscription(JointState, "/joint_states", self._on_joints, best_effort_qos)
 
-        # self._latest_image = None
-        # self.create_subscription(Image, '/camera/camera/color/image_raw', self._on_image, 10)
+        self._latest_image = None
+        self.create_subscription(Image, '/camera/camera/color/image_raw', self._on_image, 10)
 
         # Publisher to send the target pose to the robot
         target_pose_topic_name = "/cartesian_motion_controller/target_frame"
@@ -156,6 +156,12 @@ class GocMpcCartesianNode(Node):
 
         self._task = tasks[task_name]
         self._needs_yaw = self._task.needs_yaw
+
+        self.n_keypoints = len(self._task.points)
+        self.n_objects = len(self._task.objects)
+
+        self.get_logger().info(f"n_keypoints: {self.n_keypoints}")
+        self.get_logger().info(f"n_objects: {self.n_objects}")
 
         self._latest_positions = {}
         self._latest_poses = {}
@@ -225,25 +231,25 @@ class GocMpcCartesianNode(Node):
         if tw is not None:
             self._latest_twist = tw
 
-    # def _on_image(self, msg):
-    #     # 1. Convert ROS Image message to OpenCV format
-    #     cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-    #     h, w = cv_img.shape[:2]
+    def _on_image(self, msg):
+        # 1. Convert ROS Image message to OpenCV format
+        cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = cv_img.shape[:2]
 
-    #     # 2. Calculate cropping coordinates for a centered square
-    #     # We find the shortest side to ensure the square fits
-    #     size = min(h, w)
-    #     start_x = (w - size) // 2
-    #     start_y = (h - size) // 2
+        # 2. Calculate cropping coordinates for a centered square
+        # We find the shortest side to ensure the square fits
+        size = min(h, w)
+        start_x = (w - size) // 2
+        start_y = (h - size) // 2
 
-    #     # Crop using NumPy slicing: [y1:y2, x1:x2]
-    #     square_crop = cv_img[start_y:start_y+size, start_x:start_x+size]
+        # Crop using NumPy slicing: [y1:y2, x1:x2]
+        square_crop = cv_img[start_y:start_y+size, start_x:start_x+size]
 
-    #     # 3. Downscale to customizable resolution
-    #     resized_img = cv2.resize(square_crop, (self._target_img_dim, self._target_img_dim), interpolation=cv2.INTER_AREA)
+        # 3. Downscale to customizable resolution
+        resized_img = cv2.resize(square_crop, (self._target_img_dim, self._target_img_dim), interpolation=cv2.INTER_AREA)
 
-    #     # Optional: Do something with resized_img (e.g., publish it or run inference)
-    #     self._latest_image = resized_img
+        # Optional: Do something with resized_img (e.g., publish it or run inference)
+        self._latest_image = resized_img
 
     def _make_obj_point_callback(self, name: str):
 
