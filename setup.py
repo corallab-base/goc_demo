@@ -35,6 +35,7 @@ setup(
             'goc_cartesian_demo_node = goc_demo.goc_cartesian_demo_node:main',
             'goc_cartesian_demo_node_1_robot = goc_demo.goc_cartesian_demo_node_1_robot:main',
             'tf_tweaker = goc_demo.tf_tweaker:main',
+            'replay_pick_and_place = goc_demo.replay_pick_and_place:main',
         ],
     },
 )
