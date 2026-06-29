@@ -78,6 +78,7 @@ def generate_launch_description():
             # "mesh_file_path": "/home/tassos/phd/data/ycb/010_potted_meat_can_google_16k/010_potted_meat_can/google_16k/textured.obj",
             "mesh_file_path": mesh_file,
             "objects": obj_names,
+            "reinitialize_on_mask": True,
         }],
         output='screen',
         # parameters=[{'queue_size': 20, 'approximate': True}],
