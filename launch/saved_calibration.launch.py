@@ -17,6 +17,8 @@ def generate_launch_description() -> LaunchDescription:
                 "camera_color_optical_frame",
                 "--translation", "-0.8128", "0.9250", "0.3228",
                 "--quaternion", "-0.0339", "0.7628", "-0.6442", "0.0459",
+                # "--translation", "-0.7769", "0.9368", "0.3251",
+                # "--quaternion",  "-0.0339", "0.7628", "-0.6442", "0.0459",
                 # "--roll",
                 # "1.73858",
                 # "--pitch",
