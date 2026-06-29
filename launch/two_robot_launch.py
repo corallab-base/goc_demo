@@ -85,6 +85,24 @@ def generate_launch_description():
         )
     ])
 
+    left_force_torque_relay = Node(
+        package='topic_tools',
+        executable='relay',
+        arguments=[
+            '/left/force_torque_sensor_broadcaster/wrench',
+            '/left/cartesian_compliance_controller/ft_sensor_wrench'
+        ]
+    )
+
+    right_force_torque_relay = Node(
+        package='topic_tools',
+        executable='relay',
+        arguments=[
+            '/right/force_torque_sensor_broadcaster/wrench',
+            '/right/cartesian_compliance_controller/ft_sensor_wrench'
+        ]
+    )
+
     launch_rviz = LaunchConfiguration("launch_rviz")
     rviz_config_file = PathJoinSubstitution(
         [FindPackageShare("goc_demo"), "config", "view_two_robots.rviz"]
@@ -101,7 +119,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         left_robot_ip_arg,
+        left_force_torque_relay,
         right_robot_ip_arg,
+        right_force_torque_relay,
         launch_rviz_arg,
         left_robot_launch,
         right_robot_launch,
