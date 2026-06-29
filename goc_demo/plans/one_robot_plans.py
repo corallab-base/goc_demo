@@ -59,7 +59,7 @@ def do_pick_and_place(graph):
         graph.structure.add_edge(release, back_off, True)
 
         if randomize:
-            offset = np.random.standard_normal((3,)) * np.array([0.07, 0.07, 0.0])
+            offset = np.random.uniform(low=-1.0, high=1.0, size=(3,)) * np.array([0.07, 0.07, 0.0])
             displacement = displacement + offset
             print(f"SAMPLED FOR INIT: {displacement}")
         
@@ -106,7 +106,7 @@ def do_pick_and_place(graph):
     go_home_1 = graph.structure.add_node()
     graph.structure.add_edge(back_off_1, go_home_1, True)
 
-    home_offset = np.random.standard_normal((3,)) * np.array([0.1, 0.1, 0.07])
+    home_offset = np.random.uniform(low=-1.0, high=1.0, size=(3,)) * np.array([0.1, 0.1, 0.07])
     home = np.array([-0.5, 0.0, 0.5]) + home_offset
     print(f"SAMPLED FOR HOME: {home}")
 
@@ -143,7 +143,7 @@ def do_pick_and_place(graph):
     go_home_1 = graph.structure.add_node()
     graph.structure.add_edge(back_off_1, go_home_1, True)
 
-    home_offset = np.random.standard_normal((3,)) * np.array([0.1, 0.1, 0.07])
+    home_offset = np.random.uniform(low=-1.0, high=1.0, size=(3,)) * np.array([0.1, 0.1, 0.07])
     home = np.array([-0.5, 0.0, 0.5]) + home_offset
     print(f"SAMPLED FOR HOME: {home}")
 
@@ -208,6 +208,11 @@ def do_move_spam(graph):
         )
         graph.add_grasp_change(phi, "grab", robot_id, block);
 
+        # graph.add_edge_constraint(
+        #     approach,
+        #     eq(graph.agent_q(robot_id),
+        #        graph.object_q(block) + np.array([0.0, 0.0, 0.3, 0.0]))
+        # )
         return approach, pick_up
 
     def add_release(held_block, position, randomize=False):
@@ -216,7 +221,7 @@ def do_move_spam(graph):
         graph.structure.add_edge(release, back_off, True)
 
         if randomize:
-            offset = np.random.standard_normal((4,)) * np.array([0.05, 0.05, 0.0, np.pi/4])
+            offset = np.random.uniform(low=-1.0, high=1.0, size=(4,)) * np.array([0.05, 0.05, 0.0, np.pi/2])
             position = position + offset
             print(f"SAMPLED FOR INIT: {position}")
 
@@ -275,7 +280,7 @@ def do_move_spam(graph):
     go_home_1 = graph.structure.add_node()
     graph.structure.add_edge(back_off_1, go_home_1, True)
 
-    home_offset = np.random.standard_normal((4,)) * np.array([0.05, 0.05, 0.02, np.pi/4])
+    home_offset = np.random.uniform(low=-1.0, high=1.0, size=(4,)) * np.array([0.1, 0.1, 0.04, np.pi/2])
     home = np.array([-0.5, 0.0, 0.5, 0.0]) + home_offset
     print(f"SAMPLED FOR HOME: {home}")
 
