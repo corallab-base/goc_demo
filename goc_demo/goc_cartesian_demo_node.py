@@ -54,93 +54,35 @@ from goc_demo.plans import (
 
 WORLD_FRAME = "left_world"
 
-Task = namedtuple('Task', ["builder", "objects"])
-
-
-def translational_curvature_xyz(X, eps=1e-9):
-    """
-    X: (N, >=3) array of poses; xyz are in columns 0:3.
-    Returns: (N,) curvature array (1/m). Endpoints use one-sided diffs.
-    """
-    P = np.asarray(X)[:, :3]                       # (N,3)
-    N = P.shape[0]
-    if N < 3:
-        return np.zeros(N)
-
-    # Arc length parameter s
-    dP = np.linalg.norm(np.diff(P, axis=0), axis=1)         # (N-1,)
-    s = np.zeros(N)
-    s[1:] = np.cumsum(dP)
-
-    # First derivative dr/ds
-    r_s = np.zeros_like(P)
-    # central differences for interior
-    ds_c = (s[2:] - s[:-2])[:, None]                        # (N-2,1)
-    r_s[1:-1] = (P[2:] - P[:-2]) / np.maximum(ds_c, eps)
-    # one-sided at ends
-    r_s[0]  = (P[1]  - P[0])  / max(s[1]-s[0], eps)
-    r_s[-1] = (P[-1] - P[-2]) / max(s[-1]-s[-2], eps)
-
-    # Second derivative d2r/ds2 (curvature vector)
-    r_ss = np.zeros_like(P)
-    # interior: nonuniform spacing formula via flux form
-    ds_fwd = (s[2:] - s[1:-1])[:, None]                     # (N-2,1)
-    ds_bwd = (s[1:-1] - s[:-2])[:, None]
-    r_ss[1:-1] = 2.0 * ( (P[2:] - P[1:-1]) / np.maximum(ds_fwd, eps)
-                         - (P[1:-1] - P[:-2]) / np.maximum(ds_bwd, eps) ) \
-                         / np.maximum(ds_fwd + ds_bwd, eps)
-    # ends: simple one-sided second diffs
-    r_ss[0]  = (P[2]  - 2*P[1]  + P[0])  / max((s[2]-s[0])*(s[1]-s[0]) + eps, eps)
-    r_ss[-1] = (P[-1] - 2*P[-2] + P[-3]) / max((s[-1]-s[-3])*(s[-1]-s[-2]) + eps, eps)
-
-    # Curvature κ = ||r' × r''|| / ||r'||^3  (with derivatives w.r.t. s)
-    cross = np.cross(r_s, r_ss)                             # (N,3)
-    num = np.linalg.norm(cross, axis=1)
-    den = np.maximum(np.linalg.norm(r_s, axis=1)**3, eps)
-    kappa = num / den
-    return kappa
+Task = namedtuple('Task', ["builder", "points", "objects", "needs_yaw"])
 
 
 class GocMpcCartesianNode(Node):
     """
-    Subscribes to TCP Poses, calls goc_mpc.step(t, x, x_dot), and streams tiny
-    FollowCartesianTrajectory goals to the cartesian_motion_controller.
+    Runs GoC-MPC with two robots for a given task.
     """
 
     def __init__(self, task_name: str):
         super().__init__("goc_mpc_cartesian_node")
         
         # --- Parameters (your snippet + a couple extra) ---
-        self.declare_parameter("left_pose_topic", "/left/cartesian_motion_controller/current_pose")
-        self.declare_parameter("left_twist_topic", "/left/cartesian_motion_controller/current_twist")
-        self.declare_parameter("right_pose_topic", "/right/cartesian_motion_controller/current_pose")
-        self.declare_parameter("right_twist_topic", "/right/cartesian_motion_controller/current_twist")
-        self.declare_parameter("keypoints_topic", "/demo_world_node/centroids_world")
-        self.declare_parameter("rate_hz", 30.0)
-        self.declare_parameter("dry_run", False)
-        self.declare_parameter("mpc_output_mode", "position")  # or "velocity"
-        self.declare_parameter("preview_points", 1)            # 1 is fine for most
-        self.declare_parameter("dt_scale", 1.0)                # stretch/shrink dt used in goal points
-        self.declare_parameter("goal_time_tolerance_sec", 0.05)
-        self.declare_parameter("stop_with_zero_velocity", True)
+        self.declare_parameter("left_pose_topic", "/left/cartesian_compliance_controller/current_pose")
+        self.declare_parameter("left_twist_topic", "/left/cartesian_compliance_controller/current_twist")
+        self.declare_parameter("right_pose_topic", "/right/cartesian_compliance_controller/current_pose")
+        self.declare_parameter("right_twist_topic", "/right/cartesian_compliance_controller/current_twist")
+        self.declare_parameter("rate_hz", 10.0)
 
         # Read params
         self._left_pose_topic: str = self.get_parameter("left_pose_topic").value
         self._left_twist_topic: str = self.get_parameter("left_twist_topic").value
         self._right_pose_topic: str = self.get_parameter("right_pose_topic").value
         self._right_twist_topic: str = self.get_parameter("right_twist_topic").value
-        self._keypoints_topic: str = self.get_parameter("keypoints_topic").value
 
         self._rate_hz: float = float(self.get_parameter("rate_hz").value)
-        self._preview_points: int = int(self.get_parameter("preview_points").value)
-        self._dt_scale: float = float(self.get_parameter("dt_scale").value)
-        self._goal_time_tol: float = float(self.get_parameter("goal_time_tolerance_sec").value)
-        self._stop_with_zero_velocity: bool = bool(self.get_parameter("stop_with_zero_velocity").value)
-        self._dry_run = bool(self.get_parameter("dry_run").value)
 
         if self._rate_hz <= 0.0:
             self.get_logger().warn("rate_hz must be > 0; defaulting to 100.0")
-            self._rate_hz = 100.0
+            self._rate_hz = 10.0
 
         self._period_sec = 1.0 / self._rate_hz
 
@@ -149,13 +91,7 @@ class GocMpcCartesianNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
 
         # --- Sub/Pub QoS ---
-        pose_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
-
-        keypoints_qos = QoSProfile(
+        best_effort_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
@@ -171,59 +107,39 @@ class GocMpcCartesianNode(Node):
 
         # --- Subscriptions ---
         self._latest_left_pose: Optional[PoseStamped] = None
-        self.create_subscription(PoseStamped, self._left_pose_topic, self._on_left_pose, pose_qos)
+        self.create_subscription(PoseStamped, self._left_pose_topic, self._on_left_pose, best_effort_qos)
         self._latest_left_twist: Optional[TwistStamped] = None
-        self.create_subscription(TwistStamped, self._left_twist_topic, self._on_left_twist, pose_qos)
+        self.create_subscription(TwistStamped, self._left_twist_topic, self._on_left_twist, best_effort_qos)
         self._latest_right_pose: Optional[PoseStamped] = None
-        self.create_subscription(PoseStamped, self._right_pose_topic, self._on_right_pose, pose_qos)
+        self.create_subscription(PoseStamped, self._right_pose_topic, self._on_right_pose, best_effort_qos)
         self._latest_right_twist: Optional[TwistStamped] = None
-        self.create_subscription(TwistStamped, self._right_twist_topic, self._on_right_twist, pose_qos)
-
-        self._latest_left_q: Optional[np.ndarray] = None
-        self._latest_left_qd: Optional[np.ndarray] = None
-        self._latest_left_eff: Optional[np.ndarray] = None
-        self.create_subscription(JointState, "/left/joint_states", self._on_left_joints, pose_qos)
-        self._latest_right_q: Optional[np.ndarray] = None
-        self._latest_right_qd: Optional[np.ndarray] = None
-        self._latest_right_eff: Optional[np.ndarray] = None
-        self.create_subscription(JointState, "/right/joint_states", self._on_right_joints, pose_qos)
-
+        self.create_subscription(TwistStamped, self._right_twist_topic, self._on_right_twist, best_effort_qos)
 
         # Publisher to send the target pose to the robot
-        if not self._dry_run:
-            # left_target_twist_topic_name = "/left/cartesian_motion_controller/target_twist"
-            # self.left_target_twist_publisher = self.create_publisher(
-            #     TwistStamped, left_target_twist_topic_name, 10
-            # )
-            # right_target_twist_topic_name = "/right/cartesian_motion_controller/target_twist"
-            # self.right_target_twist_publisher = self.create_publisher(
-            #     TwistStamped, right_target_twist_topic_name, 10
-            # )
-
-            left_target_pose_topic_name = "/left/cartesian_motion_controller/target_frame"
-            self.left_target_pose_publisher = self.create_publisher(
-                PoseStamped, left_target_pose_topic_name, 10
-            )
-            right_target_pose_topic_name = "/right/cartesian_motion_controller/target_frame"
-            self.right_target_pose_publisher = self.create_publisher(
-                PoseStamped, right_target_pose_topic_name, 10
-            )
+        left_target_pose_topic_name = "/left/cartesian_compliance_controller/target_frame"
+        self.left_target_pose_publisher = self.create_publisher(
+            PoseStamped, left_target_pose_topic_name, 10
+        )
+        right_target_pose_topic_name = "/right/cartesian_compliance_controller/target_frame"
+        self.right_target_pose_publisher = self.create_publisher(
+            PoseStamped, right_target_pose_topic_name, 10
+        )
 
         # instatiate real grippers (not the cleanest, but has to be done)
-        left_ip_address = "10.168.4.230"
-        self.left_real_gripper = robotiq.RobotiqGripper(disabled=False)
-        self.left_real_gripper.connect(left_ip_address, 63352)
-        self.left_real_gripper.activate(auto_calibrate=True)
-        self.left_real_gripper.open(speed=2, force=2)
+        left_ip_address = "10.168.4.229"
+        self._left_real_gripper = robotiq.RobotiqGripper(disabled=False)
+        self._left_real_gripper.connect(left_ip_address, 63352)
+        self._left_real_gripper.activate(auto_calibrate=True)
+        self._left_real_gripper.open(speed=2, force=2)
 
         right_ip_address = "10.168.4.249"
-        self.right_real_gripper = robotiq.RobotiqGripper(disabled=False)
-        self.right_real_gripper.connect(right_ip_address, 63352)
-        self.right_real_gripper.activate(auto_calibrate=True)
-        self.right_real_gripper.open(speed=2, force=2)
+        self._right_real_gripper = robotiq.RobotiqGripper(disabled=False)
+        self._right_real_gripper.connect(right_ip_address, 63352)
+        self._right_real_gripper.activate(auto_calibrate=True)
+        self._right_real_gripper.open(speed=2, force=2)
 
-        self.left_robot_paused = False
-        self.right_robot_paused = False
+        self._left_robot_paused = False
+        self._right_robot_paused = False
         self._left_pre_grasp_timer = None
         self._right_pre_grasp_timer = None
         self._left_resume_timer = None
@@ -240,34 +156,59 @@ class GocMpcCartesianNode(Node):
         # --- Controller ---
 
         tasks = {
-            "move_in_circles": Task(builder=move_in_circles_builder,
-                                    objects=[]),
-            "track_above": Task(builder=track_above_builder,
-                                objects=["blue", "green"]),
+            "move_in_circles":     Task(builder=move_in_circles_builder,
+                                        points=[],
+                                        objects=[],
+                                        needs_yaw=False),
+            "track_above":         Task(builder=track_above_builder,
+                                        points=["blue", "green"],
+                                        objects=[],
+                                        needs_yaw=False),
             "dynamic_track_above": Task(builder=dynamic_track_above_builder,
-                                objects=["blue", "green"]),
-            "arrange_blocks": Task(builder=block_arranging_builder,
-                                 objects=["blue", "red", "green"]),
+                                        points=["blue", "green"],
+                                        objects=[],
+                                        needs_yaw=False),
+            "arrange_blocks":      Task(builder=block_arranging_builder,
+                                        points=["blue", "red", "green"],
+                                        objects=[],
+                                        needs_yaw=False),
         }
 
-        self.task = tasks[task_name]
+        self._task = tasks[task_name]
+        self._needs_yaw = self._task.needs_yaw
+
+        self.n_keypoints = len(self._task.points)
+        self.n_objects = len(self._task.objects)
+
+        self.get_logger().info(f"n_keypoints: {self.n_keypoints}")
+        self.get_logger().info(f"n_objects: {self.n_objects}")
 
         self._latest_positions = {}
+        self._latest_poses = {}
 
         self.subs = []
-        for name in self.task.objects:
+        for name in self._task.points:
             topic = f'/{name}/center'
             self.get_logger().info(f'Subscribing to {topic}')
             sub = self.create_subscription(
                 PointStamped, topic,
                 self._make_obj_point_callback(name),
-                keypoints_qos
+                best_effort_qos
+            )
+            self.subs.append(sub)
+
+        for name in self._task.objects:
+            topic = f'/{name}/center_pose'
+            self.get_logger().info(f'Subscribing to {topic}')
+            sub = self.create_subscription(
+                PoseStamped, topic,
+                self._make_obj_pose_callback(name),
+                best_effort_qos
             )
             self.subs.append(sub)
 
         self.n_agents = 2
-        self.n_keypoints = 0
-        self.goc_mpc = self._setup_goc_mpc(self.task)
+        self.goc_mpc = self._setup_goc_mpc(self._task)
         self._obs = None
 
         # metrics
@@ -290,25 +231,11 @@ class GocMpcCartesianNode(Node):
         self.recorded_data = defaultdict(list)
 
     def _setup_goc_mpc(self, task):
-        env, graph, goc_mpc = task.builder()
-
-        self._env = env
-        self.n_keypoints = graph.num_objects
-
-        self.get_logger().info(f"n_keypoints: {self.n_keypoints}")
+        graph, goc_mpc = task.builder()
 
         return goc_mpc
 
     # --- Callbacks ---
-    def _on_left_joints(self, msg: JointState):
-        self._latest_left_q = np.array(msg.position)
-        self._latest_left_qd = np.array(msg.velocity)
-        self._latest_left_eff = np.array(msg.effort)
-
-    def _on_right_joints(self, msg: JointState):
-        self._latest_right_q = np.array(msg.position)
-        self._latest_right_qd = np.array(msg.velocity)
-        self._latest_right_eff = np.array(msg.effort)
 
     def _on_left_pose(self, msg: PoseStamped):
         ps_w = self._to_world(msg)
@@ -357,23 +284,69 @@ class GocMpcCartesianNode(Node):
 
         return callback
 
+    def _make_obj_pose_callback(self, name: str):
+
+        def callback(msg: PoseStamped):
+            """Transform incoming pose into target_frame; store pose."""
+            if not msg.header.frame_id:
+                self.get_logger().warn(f'[{name}] Pose has empty frame_id; ignoring.')
+                return
+
+            try:
+                # Get transform from pose frame to target_frame at the message time
+                tf = self.tf_buffer.lookup_transform(
+                    WORLD_FRAME,          # target
+                    msg.header.frame_id,  # source
+                    Time(), # rclpy.time.Time.from_msg(msg.header.stamp),
+                    # timeout=rclpy.duration.Duration(seconds=0.2)
+                )
+
+                p = do_transform_pose_stamped(msg, tf).pose
+                if self._needs_yaw:
+                    yaw = self._quat_to_yaw(p.orientation)
+                    self._latest_poses[name] = (float(p.position.x),
+                                                float(p.position.y),
+                                                float(p.position.z),
+                                                float(yaw))
+                else:
+                    self._latest_poses[name] = (float(p.position.x),
+                                                float(p.position.y),
+                                                float(p.position.z),
+                                                float(p.orientation.w),
+                                                float(p.orientation.x),
+                                                float(p.orientation.y),
+                                                float(p.orientation.z))
+
+            except TransformException as ex:
+                # You might see this until TF is available / connected
+                self.get_logger().debug(f'[{name}] TF error: {ex}')
+
+        return callback
+
     def _extract_state(self,
                        left_pose: Pose,
                        left_twist: Twist,
                        right_pose: Pose,
                        right_twist: Twist,
-                       latest_positions: dict[name, tuple[float, float, float]]) -> Tuple[np.ndarray, np.ndarray]:
+                       latest_positions: dict[name, tuple[float, float, float]],
+                       latest_poses: dict[name, any]) -> Tuple[np.ndarray, np.ndarray]:
 
-        # Only using cartesian position
         def pose_to_arr(pose: Pose):
-            return np.array([pose.position.x,
-                             pose.position.y,
-                             pose.position.z])
+            arr = np.array([pose.position.x,
+                            pose.position.y,
+                            pose.position.z])
+            if self._needs_yaw:
+                yaw = self._quat_to_yaw(pose.orientation)
+                arr = np.append(arr, yaw)
+            return arr
 
         def twist_to_arr(twist: Twist):
-            return np.array([twist.linear.x,
-                             twist.linear.y,
-                             twist.linear.z])
+            arr = np.array([twist.linear.x,
+                            twist.linear.y,
+                            twist.linear.z])
+            if self._needs_yaw:
+                arr = np.append(arr, 0.0)  # yaw_dot not available
+            return arr
 
         # Reorder according to self._joints
         left_x = pose_to_arr(left_pose)
@@ -382,22 +355,25 @@ class GocMpcCartesianNode(Node):
         right_x = pose_to_arr(right_pose)
         right_x_dot = twist_to_arr(right_twist)
 
-        # if kps.shape[0] != self.n_keypoints:
-        #     raise ValueError(f"Not enough or too many keypoints ({kps.shape[0]} != {self.n_keypoints})")
+        if any([name not in latest_positions for name in self._task.points]):
+            non_found = list(filter(lambda name: name not in latest_positions, self._task.points))
+            raise ValueError(f"points {non_found} are not found")
 
-        # kp_x = kps[:self.n_keypoints].flatten()
-        # kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
+        kp_x = np.array([latest_positions[name] for name in self._task.points]).flatten()
+        if self._needs_yaw:
+            kp_x_dot = np.zeros((self.n_keypoints, 4)).flatten()
+        else:
+            kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
 
-        if any([name not in latest_positions for name in self.task.objects]):
-            non_found = list(filter(lambda name: name not in latest_positions, self.task.objects))
-            raise ValueError(f"objects {non_found} are not found")
-
-        kp_x = np.array([latest_positions[name] for name in self.task.objects]).flatten()
-        kp_x_dot = np.zeros((self.n_keypoints, 3)).flatten()
+        obj_x = np.array([latest_poses[name] for name in self._task.objects]).flatten()
+        if self._needs_yaw:
+            obj_x_dot = np.zeros((self.n_objects, 4)).flatten()
+        else:
+            obj_x_dot = np.zeros((self.n_objects, 3)).flatten()
 
         # x, x_dot
-        x = np.concatenate((left_x, right_x, kp_x))
-        x_dot = np.concatenate((left_x_dot, right_x_dot, kp_x_dot))
+        x = np.concatenate((left_x, right_x, kp_x, obj_x))
+        x_dot = np.concatenate((left_x_dot, right_x_dot, kp_x_dot, obj_x_dot))
         return x, x_dot
 
     def _on_timer(self):
@@ -416,29 +392,16 @@ class GocMpcCartesianNode(Node):
         if self._latest_positions is None:
             self.get_logger().info('_latest_positions is None')
             return
-
-        if self._latest_left_q is None:
-            self.get_logger().info('_latest_left_q is None')
-            return
-        if self._latest_left_qd is None:
-            self.get_logger().info('_latest_left_qd is None')
-            return
-        if self._latest_left_eff is None:
-            self.get_logger().info('_latest_left_eff is None')
-            return
-
-        if self._latest_right_q is None:
-            self.get_logger().info('_latest_right_q is None')
-            return
-        if self._latest_right_qd is None:
-            self.get_logger().info('_latest_right_qd is None')
-            return
-        if self._latest_right_eff is None:
-            self.get_logger().info('_latest_right_eff is None')
+        if self._latest_poses is None:
+            self.get_logger().info('_latest_poses is None')
             return
 
         if len(self.goc_mpc.remaining_phases) <= 0:
             self.get_logger().info('Nothing left to do!')
+
+            # TODO: Fix this hack
+            self.goc_mpc = self._setup_goc_mpc(self._task)
+
             return
 
         now = self.get_clock().now()
@@ -449,26 +412,12 @@ class GocMpcCartesianNode(Node):
         #######################################################################
 
         try:
-            if self._dry_run:
-                if self._obs is None:
-                    self._obs, _ = self._env.reset()
-                    x, x_dot = self._extract_state(self._latest_left_pose,
-                                                   self._latest_left_twist,
-                                                   self._latest_right_pose,
-                                                   self._latest_right_twist,
-                                                   self._latest_positions)
-                    self._env._set_controlled_q(x)
-                    self._env._set_controlled_qdot(x_dot)
-                    self._env.render()
-                else:
-                    x, x_dot = self._obs
-            else:
-                x, x_dot = self._extract_state(self._latest_left_pose,
-                                               self._latest_left_twist,
-                                               self._latest_right_pose,
-                                               self._latest_right_twist,
-                                               self._latest_positions)
-
+            x, x_dot = self._extract_state(self._latest_left_pose,
+                                           self._latest_left_twist,
+                                           self._latest_right_pose,
+                                           self._latest_right_twist,
+                                           self._latest_positions,
+                                           self._latest_poses)
         except Exception as e:
             self.get_logger().warn(f"Bad State: {e}")
             return
@@ -479,7 +428,7 @@ class GocMpcCartesianNode(Node):
 
         try:
             xi_h, xi_dot_h, _ = self.goc_mpc.step(t, x, x_dot)
-            
+
             self.waypoint_solve_times.append(self.goc_mpc.waypoint_mpc.get_last_solve_time())
             self.timing_solve_times.append(self.goc_mpc.timing_mpc.get_last_solve_time())
             self.short_path_solve_times.append(self.goc_mpc.short_path_mpc.get_last_solve_time())
@@ -500,95 +449,51 @@ class GocMpcCartesianNode(Node):
 
         # WPS VISUALIZATION
 
-        agent_wps = self.goc_mpc.timing_mpc.view_wps_list()
+        # agent_wps = self.goc_mpc.timing_mpc.view_wps_list()
 
-        self._publish_paths(
-            self._left_waypoints_publisher, agent_wps[0],
-            self._right_waypoints_publisher, agent_wps[1],
-            pos_only=True,
-        )
+        # self._publish_paths(
+        #     self._left_waypoints_publisher, agent_wps[0],
+        #     self._right_waypoints_publisher, agent_wps[1],
+        #     pos_only=True,
+        # )
 
         # FULL SPLINE VISUALIZATION
 
-        agent_xi_ls = []
-        for i, side in enumerate(["left", "right"]):
-            agent_spline = self.goc_mpc.last_cycle_splines[i]
-            begin_time = agent_spline.begin()
-            end_time = agent_spline.end()
-            times = np.linspace(begin_time, end_time, 100)
-            agent_xi_l, _ = agent_spline.eval_multiple(times)
-            agent_xi_ls.append(agent_xi_l)
+        # agent_xi_ls = []
+        # for i, side in enumerate(["left", "right"]):
+        #     agent_spline = self.goc_mpc.last_cycle_splines[i]
+        #     begin_time = agent_spline.begin()
+        #     end_time = agent_spline.end()
+        #     times = np.linspace(begin_time, end_time, 100)
+        #     agent_xi_l, _ = agent_spline.eval_multiple(times)
+        #     agent_xi_ls.append(agent_xi_l)
 
-        self._publish_paths(
-            self._left_long_path_publisher, agent_xi_ls[0],
-            self._right_long_path_publisher, agent_xi_ls[1],
-            pos_only=True,
-        )
+        # self._publish_paths(
+        #     self._left_long_path_publisher, agent_xi_ls[0],
+        #     self._right_long_path_publisher, agent_xi_ls[1],
+        #     pos_only=True,
+        # )
 
         # SHORT SPLINE VISUALIZATION
 
-        self._publish_paths(
-            self._left_short_path_publisher, xi_h[:, 0],
-            self._right_short_path_publisher, xi_h[:, 1],
-            pos_only=True,
-        )
+        # self._publish_paths(
+        #     self._left_short_path_publisher, xi_h[:, 0],
+        #     self._right_short_path_publisher, xi_h[:, 1],
+        #     pos_only=True,
+        # )
 
         # LOGGING
 
-        nodes_and_taus = list(zip(
-            self.goc_mpc.timing_mpc.get_next_nodes(),
-            self.goc_mpc.timing_mpc.get_next_taus()
-        ))
+        # nodes_and_taus = list(zip(
+        #     self.goc_mpc.timing_mpc.get_next_nodes(),
+        #     self.goc_mpc.timing_mpc.get_next_taus()
+        # ))
 
-        # time_deltas_list = self.goc_mpc.timing_mpc.view_time_deltas_list()
-
-        # if nodes_and_taus:
-        #     next_node, next_tau = nodes_and_taus[0]
-        #     near_threshold = 0.15 < next_tau < 0.25
-        #     agent_deltas = time_deltas_list[0] if time_deltas_list else []
-        #     delta_0 = agent_deltas[0] if len(agent_deltas) > 0 else -1
-
-        #     self.get_logger().info(
-        #         f"node={next_node}, tau={next_tau:.3f}, delta[0]={delta_0:.3f}, "
-        #         f"NEAR_THRESH={near_threshold}, remaining={self.goc_mpc.remaining_phases}\n"
-        #         f"Current pos: [{x[0]:.3f}, {x[1]:.3f}, {x[2]:.3f}]\n"
-        #         f"Target waypoint 0: {self.goc_mpc.waypoint_mpc.view_waypoints()[0][:3]}"
-        #     )
-
-        self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
-
-        # if len(nodes_and_taus) == 0 and self.end_elapsed_time is None:
-        #     self.end_elapsed_time = t
+        # self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
 
         #######################################################################
         #                            EXECUTE ACTION                           #
         #######################################################################
-
-        # # 2nd timestep (not current velocity), first agent
-        # left_target_vel = xi_dot_h[1, 0]
-
-        # left_target_twist_stamped = TwistStamped()
-        # left_target_twist_stamped.header.frame_id = WORLD_FRAME
-        # left_target_twist_stamped.header.stamp = self.get_clock().now().to_msg()
-        # left_target_twist_stamped.twist.linear.x = left_target_vel[0]
-        # left_target_twist_stamped.twist.linear.y = left_target_vel[1]
-        # left_target_twist_stamped.twist.linear.z = left_target_vel[2]
-        # left_target_twist_stamped.twist.angular.x = left_target_vel[3]
-        # left_target_twist_stamped.twist.angular.y = left_target_vel[4]
-        # left_target_twist_stamped.twist.angular.z = left_target_vel[5]
-
-        # # 2nd timestep (not current velocity), second agent
-        # right_target_vel = xi_dot_h[1, 1]
-
-        # right_target_twist_stamped = TwistStamped()
-        # right_target_twist_stamped.header.frame_id = WORLD_FRAME
-        # right_target_twist_stamped.header.stamp = self.get_clock().now().to_msg()
-        # right_target_twist_stamped.twist.linear.x = right_target_vel[0]
-        # right_target_twist_stamped.twist.linear.y = right_target_vel[1]
-        # right_target_twist_stamped.twist.linear.z = right_target_vel[2]
-        # right_target_twist_stamped.twist.angular.x = right_target_vel[3]
-        # right_target_twist_stamped.twist.angular.y = right_target_vel[4]
-        # right_target_twist_stamped.twist.angular.z = right_target_vel[5]
 
         left_target_pose = xi_h[3, 0]
         right_target_pose = xi_h[3, 1]
@@ -599,10 +504,19 @@ class GocMpcCartesianNode(Node):
         left_target_pose_stamped.pose.position.x = left_target_pose[0]
         left_target_pose_stamped.pose.position.y = left_target_pose[1]
         left_target_pose_stamped.pose.position.z = left_target_pose[2]
-        left_target_pose_stamped.pose.orientation.w = 0.0
-        left_target_pose_stamped.pose.orientation.x = 0.0
-        left_target_pose_stamped.pose.orientation.y = 1.0
-        left_target_pose_stamped.pose.orientation.z = 0.0
+
+        if self._needs_yaw:
+            yaw = left_target_pose[3]
+            qw, qx, qy, qz = self._yaw_to_quat(yaw)
+            left_target_pose_stamped.pose.orientation.w = qw
+            left_target_pose_stamped.pose.orientation.x = qx
+            left_target_pose_stamped.pose.orientation.y = qy
+            left_target_pose_stamped.pose.orientation.z = qz
+        else:
+            left_target_pose_stamped.pose.orientation.w = 0.0
+            left_target_pose_stamped.pose.orientation.x = 0.0
+            left_target_pose_stamped.pose.orientation.y = 1.0
+            left_target_pose_stamped.pose.orientation.z = 0.0
 
         right_target_pose_stamped = PoseStamped()
         right_target_pose_stamped.header.frame_id = WORLD_FRAME
@@ -610,98 +524,61 @@ class GocMpcCartesianNode(Node):
         right_target_pose_stamped.pose.position.x = right_target_pose[0]
         right_target_pose_stamped.pose.position.y = right_target_pose[1]
         right_target_pose_stamped.pose.position.z = right_target_pose[2]
-        right_target_pose_stamped.pose.orientation.w = 0.0
-        right_target_pose_stamped.pose.orientation.x = 0.0
-        right_target_pose_stamped.pose.orientation.y = 1.0
-        right_target_pose_stamped.pose.orientation.z = 0.0
+
+        if self._needs_yaw:
+            yaw = right_target_pose[3]
+            qw, qx, qy, qz = self._yaw_to_quat(yaw)
+            right_target_pose_stamped.pose.orientation.w = qw
+            right_target_pose_stamped.pose.orientation.x = qx
+            right_target_pose_stamped.pose.orientation.y = qy
+            right_target_pose_stamped.pose.orientation.z = qz
+        else:
+            right_target_pose_stamped.pose.orientation.w = 0.0
+            right_target_pose_stamped.pose.orientation.x = 0.0
+            right_target_pose_stamped.pose.orientation.y = 1.0
+            right_target_pose_stamped.pose.orientation.z = 0.0
 
         # put in correct frame
         right_target_pose_stamped = self._to_world(right_target_pose_stamped, target_frame="right_world")
 
-        # qpos = np.concatenate((left_target_pose, right_target_pose))
-        if self._dry_run:
-            # self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
-            pass
-        else:
-            # self._obs, _, _, _, _ = self._env.step(qpos, grasp_cmds=self.goc_mpc.last_grasp_commands)
+        if len(self.goc_mpc.last_grasp_commands) > 0:
+            self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
+            for cmd, robot, point in self.goc_mpc.last_grasp_commands:
+                if robot == "free_body_0" or robot == "point_mass_0":
+                    side = "left"
+                elif robot == "free_body_1" or robot == "point_mass_1":
+                    side = "right"
+                else:
+                    continue
+                self.get_logger().info(f"Paused {side}!")
+                self._pause_robot_delayed(
+                    side=side,
+                    pre_delay=self._grasp_settle_sec,
+                    post_delay=self._grasp_pause_after_cmd_sec,
+                    gripper_cmd=cmd
+                )
 
-            if len(self.goc_mpc.last_grasp_commands) > 0:
-                self.get_logger().info(f"Grasp Commands! {self.goc_mpc.last_grasp_commands}")
-                for cmd, robot, point in self.goc_mpc.last_grasp_commands:
-                    if robot == "free_body_0" or robot == "point_mass_0":
-                        side = "left"
-                    elif robot == "free_body_1" or robot == "point_mass_1":
-                        side = "right"
-                    else:
-                        continue
-                    self.get_logger().info(f"Paused {side}!")
-                    self._pause_robot_delayed(
-                        side=side,
-                        pre_delay=self._grasp_settle_sec,
-                        post_delay=self._grasp_pause_after_cmd_sec,
-                        gripper_cmd=cmd
-                    )
+        if len(self.goc_mpc.last_cycle_backtracked_phases) > 0:
+            for agent_idx, new_phase in self.goc_mpc.last_cycle_backtracked_phases.items():
+                if agent_idx == 0:
+                    side = "left"
+                elif agent_idx == 1:
+                    side = "right"
+                else:
+                    continue
+                self.get_logger().info(f"Paused {side} to backtrack!")
+                self._pause_robot_delayed(
+                    side=side,
+                    pre_delay=0.0,
+                    post_delay=0.0,
+                    gripper_cmd="release"
+                )
 
-            if len(self.goc_mpc.last_cycle_backtracked_phases) > 0:
-                for agent_idx, new_phase in self.goc_mpc.last_cycle_backtracked_phases.items():
-                    if agent_idx == 0:
-                        side = "left"
-                    elif agent_idx == 1:
-                        side = "right"
-                    else:
-                        continue
-                    self.get_logger().info(f"Paused {side} to backtrack!")
-                    self._pause_robot_delayed(
-                        side=side,
-                        pre_delay=0.0,
-                        post_delay=0.0,
-                        gripper_cmd="release"
-                    )
+        if not self._left_robot_paused and left_target_pose_stamped is not None:
+            self.left_target_pose_publisher.publish(left_target_pose_stamped)
 
-            # if not self.left_robot_paused:
-            #     self.left_target_twist_publisher.publish(left_target_twist_stamped)
-
-            # if not self.right_robot_paused:
-            #     self.right_target_twist_publisher.publish(right_target_twist_stamped)
-
-            if not self.left_robot_paused and left_target_pose_stamped is not None:
-                self.left_target_pose_publisher.publish(left_target_pose_stamped)
-
-            if not self.right_robot_paused and right_target_pose_stamped is not None:
-                self.right_target_pose_publisher.publish(right_target_pose_stamped)
-
-        #######################################################################
-        #                              RECORDING                              #
-        #######################################################################
-
-        # state information ###################################################
-        self.recorded_data["left_q"].append(self._latest_left_q)
-        self.recorded_data["left_qd"].append(self._latest_left_qd)
-        self.recorded_data["left_eff"].append(self._latest_left_eff)
-        self.recorded_data["right_q"].append(self._latest_right_q)
-        self.recorded_data["right_qd"].append(self._latest_right_qd)
-        self.recorded_data["right_eff"].append(self._latest_right_eff)
-
-        self.recorded_data["left_ee_pos"].append(x[0:3])
-        self.recorded_data["left_ee_quat_wxyz"].append(np.array([0.0, 0.0, 1.0, 0.0]))
-        self.recorded_data["left_ee_vel"].append(x_dot[0:3])
-        self.recorded_data["left_gripper_pos"].append(self.left_real_gripper.get_current_position())
-        self.recorded_data["right_ee_pos"].append(x[3:6])
-        self.recorded_data["right_ee_quat_wxyz"].append(np.array([0.0, 0.0, 1.0, 0.0]))
-        self.recorded_data["right_ee_vel"].append(x_dot[3:6])
-        self.recorded_data["right_gripper_pos"].append(self.right_real_gripper.get_current_position())
-        for name, pos in self._latest_positions.items():
-            self.recorded_data[f"{name}_pos"].append(np.array(pos))
-
-        self.recorded_data["left_action"].append(left_target_pose - x[0:3])
-        self.recorded_data["right_action"].append(right_target_pose - x[3:6])
-
-        # self.get_logger().info(f"remaining phases: {self.goc_mpc.remaining_phases}")
-        reward = len(self.goc_mpc.remaining_phases) == 2 and 6 in self.goc_mpc.remaining_phases and 7 in self.goc_mpc.remaining_phases
-        # self.get_logger().info(f"reward: {reward}")
-        self.recorded_data["reward"].append(0.0 if reward else -1.0)
-        self.recorded_data["termination"].append(1.0 if reward else 0.0)
-
+        if not self._right_robot_paused and right_target_pose_stamped is not None:
+            self.right_target_pose_publisher.publish(right_target_pose_stamped)
 
     # --- Helpers ---
 
@@ -757,7 +634,7 @@ class GocMpcCartesianNode(Node):
 
     def _do_gripper_cmd(self, side: str, cmd: str):
         try:
-            gr = self.left_real_gripper if side == 'left' else self.right_real_gripper
+            gr = self._left_real_gripper if side == 'left' else self._right_real_gripper
             if cmd == 'grab':
                 gr.close(speed=200, force=2)
             elif cmd == 'release':
@@ -768,14 +645,14 @@ class GocMpcCartesianNode(Node):
             self.get_logger().error(f"Gripper {side} command '{cmd}' failed: {e}")
 
     def _resume_robot_left(self):
-        self.left_robot_paused = False
+        self._left_robot_paused = False
         if self._left_resume_timer is not None:
             self._left_resume_timer.cancel()
             self._left_resume_timer = None
         self.get_logger().info("Left robot resumed after grasp pause.")
 
     def _resume_robot_right(self):
-        self.right_robot_paused = False
+        self._right_robot_paused = False
         if self._right_resume_timer is not None:
             self._right_resume_timer.cancel()
             self._right_resume_timer = None
@@ -817,7 +694,7 @@ class GocMpcCartesianNode(Node):
         wait post_delay and resume. If re-triggered, refresh the sequence.
         """
         if side == 'left':
-            self.left_robot_paused = True
+            self._left_robot_paused = True
             self._left_pending_gripper_cmd = gripper_cmd
 
             # refresh pre-grasp one-shot
@@ -832,7 +709,7 @@ class GocMpcCartesianNode(Node):
                 self._left_resume_timer = None
 
         elif side == 'right':
-            self.right_robot_paused = True
+            self._right_robot_paused = True
             self._right_pending_gripper_cmd = gripper_cmd
 
             if self._right_pre_grasp_timer is not None:
