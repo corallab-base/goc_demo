@@ -1,20 +1,57 @@
 * To rebuild
 colcon build --packages-skip cartesian_controller_simulation cartesian_controller_tests
 
-* For any control
-ros2 launch goc_demo demo_world_launch.py left_robot_ip:=10.164.8.235 right_robot_ip:=10.164.8.222
+* For Two Robots
+** For any control
+ros2 launch goc_demo two_robot_launch.py left_robot_ip:=10.164.8.229 right_robot_ip:=10.164.8.249
 
-* For tracking
+** Step 2 (Camera and Color Tracking)
+ros2 launch goc_demo track_colors.launch.py
+
+** Step 3 (Calibration)
+*** First time
+ros2 control switch_controllers --activate scaled_joint_trajectory_controller --controller-manager /left/controller_manager
+ros2 control switch_controllers --activate scaled_joint_trajectory_controller --controller-manager /right/controller_manager
+ros2 launch goc_demo two_robot_calibration.launch.py ur_type:=ur5e
+
+*** Loading saved
+ros2 launch goc_demo left_saved_calibration.launch.py
+ros2 launch goc_demo right_saved_calibration.launch.py
+
+** Step 4 (Run)
+ros2 control switch_controllers --activate scaled_joint_trajectory_controller --controller-manager /left/controller_manager
+ros2 control switch_controllers --activate scaled_joint_trajectory_controller --controller-manager /right/controller_manager
+
+ros2 run goc_demo goc_cartesian_demo_node --task move_in_circles
+
+** For tracking
 source goc-demo-venv/bin/activate
 ros2 launch goc_demo tracker_with_realsense.launch.py camera_ns:=camera
+: ros2 launch realsense2_camera rs_launch.py camera_ns:=camera depth_module.depth_profile:=640x360x15 rgb_camera.color_profile:=640x360x15 align_depth.enable:=true enable_rgbd:=true enable_sync:=true enable_color:=true enable_depth:=true
 
-** For tweaking the camera
-ros2 run goc_demo interactive_camera_tweaker
-
-* For helper motion handles
+** For helper motion handles
 ros2 control switch_controllers --activate left_motion_control_handle right_motion_control_handle
 ros2 control switch_controllers --deactivate left_motion_control_handle right_motion_control_handle
 
-* For goc-mpc
+** For goc-mpc
 ros2 run goc_demo goc_cartesian_demo_node --task move_in_circles
 ros2 run goc_demo goc_cartesian_demo_node --task track_above
+
+* For One Robot
+** Step 1
+ros2 launch goc_demo one_robot_launch.py robot_ip:=10.168.4.249 ur_type:=ur5e
+
+** Step 2 (Camera and Color Tracking)
+ros2 launch goc_demo track_colors.launch.py
+
+** Step 3 (Calibration)
+*** First time
+ros2 launch goc_demo one_robot_calibration_launch.py ur_type:=ur5e
+
+Make sure to save it
+
+*** Loading saved
+
+
+** Step 4 (Run)
+ros2 run goc_demo goc_cartesian_demo_node_1_robot --task move_in_circles
