@@ -317,7 +317,6 @@ class GocMpcCartesianNode(Node):
 
         return callback
 
-
     def _extract_state(self,
                        pose: Pose,
                        twist: Twist,
@@ -488,7 +487,9 @@ class GocMpcCartesianNode(Node):
             self.goc_mpc.timing_mpc.get_next_taus()
         ))
 
-        self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
+        # self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
+        # self.get_logger().info(f"agent_nodes_list: {self.goc_mpc.timing_mpc.view_agent_nodes_list()}")
+        # self.get_logger().info(f"waypoints: {self.goc_mpc.waypoint_mpc.view_waypoints()}")
 
         #######################################################################
         #                            EXECUTE ACTION                           #
@@ -563,14 +564,27 @@ class GocMpcCartesianNode(Node):
         for name, pos in self._latest_positions.items():
             self.recorded_data[f"{name}_pos"].append(np.array(pos))
 
+        # During a gripper pause the robot is stationary.  The MPC keeps
+        # planning ahead, so target_pose - current already points toward the
+        # next phase.  Recording that as the action would teach the policy to
+        # move upward/away at the grasp/release moment.  Record zeros instead
+        # so the label is "hold position".
         if self._needs_yaw:
-            action = target_pose[0:3] - x[0:3]
-            action_yaw = target_pose[3] - x[3]
-            self.recorded_data["action"].append(np.concatenate([action, [action_yaw]]))
+            if self._robot_paused:
+                action = np.zeros(4)
+            else:
+                action = target_pose[0:3] - x[0:3]
+                action_yaw = target_pose[3] - x[3]
+                action = np.concatenate([action, [action_yaw]])
+            self.recorded_data["action"].append(action)
             for name, pose in self._latest_poses.items():
                 self.recorded_data[f"{name}_pose"].append(np.array(pose))
         else:
-            self.recorded_data["action"].append(target_pose - x[0:3])
+            if self._robot_paused:
+                action = np.zeros(3)
+            else:
+                action = target_pose[0:3] - x[0:3]
+            self.recorded_data["action"].append(action)
             for name, pose in self._latest_poses.items():
                 self.recorded_data[f"{name}_pose"].append(np.array(pose))
 
