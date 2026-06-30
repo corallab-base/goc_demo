@@ -250,12 +250,12 @@ left:
           #- velocity
 
       stiffness:  # w.r.t. compliance_ref_link coordinates
-          trans_x: 500.0
-          trans_y: 500.0
-          trans_z: 500.0
-          rot_x: 20.0
-          rot_y: 20.0
-          rot_z: 20.0
+          trans_x: 100.0
+          trans_y: 100.0
+          trans_z: 100.0
+          rot_x: 4.0
+          rot_y: 4.0
+          rot_z: 4.0
 
       damping:
           trans_x: 0.0 # 10.0

@@ -129,13 +129,13 @@ class GocMpcCartesianNode(Node):
         left_ip_address = "10.168.4.229"
         self._left_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self._left_real_gripper.connect(left_ip_address, 63352)
-        self._left_real_gripper.activate(auto_calibrate=True)
+        self._left_real_gripper.activate(auto_calibrate=False)
         self._left_real_gripper.open(speed=2, force=2)
 
         right_ip_address = "10.168.4.249"
         self._right_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self._right_real_gripper.connect(right_ip_address, 63352)
-        self._right_real_gripper.activate(auto_calibrate=True)
+        self._right_real_gripper.activate(auto_calibrate=False)
         self._right_real_gripper.open(speed=2, force=2)
 
         self._left_robot_paused = False
@@ -449,30 +449,30 @@ class GocMpcCartesianNode(Node):
 
         # WPS VISUALIZATION
 
-        # agent_wps = self.goc_mpc.timing_mpc.view_wps_list()
+        agent_wps = self.goc_mpc.timing_mpc.view_wps_list()
 
-        # self._publish_paths(
-        #     self._left_waypoints_publisher, agent_wps[0],
-        #     self._right_waypoints_publisher, agent_wps[1],
-        #     pos_only=True,
-        # )
+        self._publish_paths(
+            self._left_waypoints_publisher, agent_wps[0],
+            self._right_waypoints_publisher, agent_wps[1],
+            pos_only=True,
+        )
 
         # FULL SPLINE VISUALIZATION
 
-        # agent_xi_ls = []
-        # for i, side in enumerate(["left", "right"]):
-        #     agent_spline = self.goc_mpc.last_cycle_splines[i]
-        #     begin_time = agent_spline.begin()
-        #     end_time = agent_spline.end()
-        #     times = np.linspace(begin_time, end_time, 100)
-        #     agent_xi_l, _ = agent_spline.eval_multiple(times)
-        #     agent_xi_ls.append(agent_xi_l)
+        agent_xi_ls = []
+        for i, side in enumerate(["left", "right"]):
+            agent_spline = self.goc_mpc.last_cycle_splines[i]
+            begin_time = agent_spline.begin()
+            end_time = agent_spline.end()
+            times = np.linspace(begin_time, end_time, 100)
+            agent_xi_l, _ = agent_spline.eval_multiple(times)
+            agent_xi_ls.append(agent_xi_l)
 
-        # self._publish_paths(
-        #     self._left_long_path_publisher, agent_xi_ls[0],
-        #     self._right_long_path_publisher, agent_xi_ls[1],
-        #     pos_only=True,
-        # )
+        self._publish_paths(
+            self._left_long_path_publisher, agent_xi_ls[0],
+            self._right_long_path_publisher, agent_xi_ls[1],
+            pos_only=True,
+        )
 
         # SHORT SPLINE VISUALIZATION
 
@@ -484,12 +484,12 @@ class GocMpcCartesianNode(Node):
 
         # LOGGING
 
-        # nodes_and_taus = list(zip(
-        #     self.goc_mpc.timing_mpc.get_next_nodes(),
-        #     self.goc_mpc.timing_mpc.get_next_taus()
-        # ))
+        nodes_and_taus = list(zip(
+            self.goc_mpc.timing_mpc.get_next_nodes(),
+            self.goc_mpc.timing_mpc.get_next_taus()
+        ))
 
-        # self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
+        self.get_logger().info(f"next waypoints in: {nodes_and_taus}")
 
         #######################################################################
         #                            EXECUTE ACTION                           #
