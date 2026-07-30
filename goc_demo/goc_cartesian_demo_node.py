@@ -49,6 +49,7 @@ from goc_demo.plans import (
     track_above_builder,
     dynamic_track_above_builder,
     block_arranging_builder,
+    static_block_arranging_builder,
 )
 
 
@@ -172,6 +173,10 @@ class GocMpcCartesianNode(Node):
                                         points=["blue", "red", "green"],
                                         objects=[],
                                         needs_yaw=False),
+            "static_arrange_blocks": Task(builder=static_block_arranging_builder,
+                                          points=["blue", "red", "green"],
+                                          objects=[],
+                                          needs_yaw=False),
         }
 
         self._task = tasks[task_name]
