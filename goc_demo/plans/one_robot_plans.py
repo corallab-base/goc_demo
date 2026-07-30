@@ -8,6 +8,7 @@ from goc_mpc import (
 )
 
 from pydrake.math import eq
+from pydrake.symbolic import logical_and
 
 
 TIME_DELTA_CUTOFF = 0.3
@@ -15,40 +16,48 @@ PHI_TOLERANCE = 0.05
 
 
 def do_move_in_circles(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
-
     graph.structure.add_nodes(3)
     graph.structure.add_edge(0, 1, True)
     graph.structure.add_edge(1, 2, True)
 
     triangle_origin = np.array([-0.5, 0.0, 0.5])
+    q0 = graph.agent_q(0)
 
     goal_position_1 = triangle_origin + np.array([0.0, 0.1, 0.0])
-    phi0 = graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+    phi0 = graph.add_constraint(0, eq(q0, goal_position_1))
 
     goal_position_2 = triangle_origin + np.array([0.0, -0.1, 0.0])
-    phi1 = graph.add_robots_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
+    phi1 = graph.add_constraint(1, eq(q0, goal_position_2))
 
     home_position_1 = triangle_origin + np.array([0.0, 0.0, 0.1])
-    phi2 = graph.add_robots_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
+    phi2 = graph.add_constraint(2, eq(q0, home_position_1))
 
 
 def do_pick_and_place(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
     robot_id = 0
+    q0 = graph.agent_q(robot_id)
+
+    def add_holding_box(u, v, block, holding_distance_max):
+        # Symbolic equivalent of add_robot_holding_cube_constraint(u, v, robot_id,
+        # block, holding_distance_max): that helper compiles to an axis-aligned
+        # |dx|,|dy|,|dz| <= holding_distance_max box applied independently at both
+        # endpoints AND any interior node scheduled between them (see
+        # AddBoxProximityConstraint in graph_of_constraints.cpp) -- exactly what a
+        # plain (non-u_/v_) "along the edge" formula does here.
+        obj = graph.object_q(block)
+        dx, dy, dz = q0[0] - obj[0], q0[1] - obj[1], q0[2] - obj[2]
+        d = holding_distance_max
+        return graph.add_edge_constraint(
+            u, v,
+            logical_and(dx <= d, dx >= -d, dy <= d, dy >= -d, dz <= d, dz >= -d))
 
     def add_grasp(block):
         approach, pick_up = graph.structure.add_nodes(2)
         graph.structure.add_edge(approach, pick_up, True)
 
-        graph.add_robot_to_point_displacement_constraint(approach, robot_id, block, np.array([0.0, 0.0, -0.35]));
+        graph.add_constraint(approach, eq(q0, graph.object_q(block) + np.array([0.0, 0.0, -0.35])))
 
-        # aligned_phi = graph.add_edge_assignable_robot_to_point_displacement_constraint(
-        #     u=approach, v=pick_up, var=robot, point_id=block,
-        #     disp=np.array([0.0, 0.0, -0.25]),
-        #     tol=np.array([0.15, 0.15, 0.3]))
-
-        phi = graph.add_robot_to_point_displacement_constraint(pick_up, robot_id, block, np.array([0.02, 0.0, -0.17]));
+        phi = graph.add_constraint(pick_up, eq(q0, graph.object_q(block) + np.array([0.02, 0.0, -0.17])))
         graph.add_grasp_change(phi, "grab", robot_id, block);
 
         return approach, pick_up
@@ -62,25 +71,21 @@ def do_pick_and_place(graph):
             offset = np.random.uniform(low=-1.0, high=1.0, size=(3,)) * np.array([0.07, 0.07, 0.0])
             displacement = displacement + offset
             print(f"SAMPLED FOR INIT: {displacement}")
-        
-        graph.add_robot_to_point_displacement_constraint(approach, robot_id, relative_to_block, displacement + np.array([0.0, 0.0, -0.15]))
-        # graph.add_point_to_point_displacement_constraint(approach, held_block, relative_to_block, np.array([-0.10, 0.0, -0.3]))
 
-        # # keep holding between approach and putting down
-        # graph.add_robot_holding_cube_constraint(approach, release, robot_id, held_block, 0.2)
+        obj = graph.object_q(relative_to_block)
+        graph.add_constraint(approach, eq(q0, obj + displacement + np.array([0.0, 0.0, -0.15])))
 
-        phi = graph.add_robot_to_point_displacement_constraint(release, robot_id, relative_to_block, displacement)
-        # phi = graph.add_point_to_point_displacement_constraint(release, robot_id, relative_to_block, displacement)
+        phi = graph.add_constraint(release, eq(q0, obj + displacement))
         graph.add_grasp_change(phi, "release", robot_id, held_block)
 
-        graph.add_robot_to_point_displacement_constraint(back_off, robot_id, relative_to_block, displacement + np.array([0.0, 0.0, -0.15]))
+        graph.add_constraint(back_off, eq(q0, obj + displacement + np.array([0.0, 0.0, -0.15])))
 
         return approach, release, back_off
 
     # grasp and release block 0
     approach_pick_up_0, pick_up_0 = add_grasp(block=0)
     approach_release_0, release_0, back_off_0 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.10, 0.0, -0.24]))
-    grasp_phi_0 = graph.add_robot_holding_cube_constraint(pick_up_0, approach_release_0, robot_id, 0, 0.30);
+    grasp_phi_0 = add_holding_box(pick_up_0, approach_release_0, 0, 0.30)
 
     graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
 
@@ -89,14 +94,13 @@ def do_pick_and_place(graph):
     # go home
     go_home_0 = graph.structure.add_node()
     graph.structure.add_edge(back_off_0, go_home_0, True)
-    graph.add_robot_pos_linear_eq(
-        k=go_home_0, robot_id=robot_id, A=np.eye(3), b=np.array([-0.5, 0.0, 0.5]))
+    graph.add_constraint(go_home_0, eq(q0, np.array([-0.5, 0.0, 0.5])))
 
     # grasp and release block 0 again
     approach_pick_up_1, pick_up_1 = add_grasp(block=0)
     graph.structure.add_edge(go_home_0, approach_pick_up_1, True)
     approach_release_1, release_1, back_off_1 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.30, 0.0, -0.23]), randomize=True)
-    grasp_phi_1 = graph.add_robot_holding_cube_constraint(pick_up_1, release_1, robot_id, 0, 0.30);
+    grasp_phi_1 = add_holding_box(pick_up_1, release_1, 0, 0.30)
 
     graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
 
@@ -110,14 +114,13 @@ def do_pick_and_place(graph):
     home = np.array([-0.5, 0.0, 0.5]) + home_offset
     print(f"SAMPLED FOR HOME: {home}")
 
-    graph.add_robot_pos_linear_eq(
-        k=go_home_1, robot_id=robot_id, A=np.eye(3), b=home)
+    graph.add_constraint(go_home_1, eq(q0, home))
 
 
     # grasp and release block 0
     approach_pick_up_0, pick_up_0 = add_grasp(block=0)
     approach_release_0, release_0, back_off_0 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.10, 0.0, -0.24]))
-    grasp_phi_0 = graph.add_robot_holding_cube_constraint(pick_up_0, approach_release_0, robot_id, 0, 0.30);
+    grasp_phi_0 = add_holding_box(pick_up_0, approach_release_0, 0, 0.30)
 
     graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
 
@@ -126,14 +129,13 @@ def do_pick_and_place(graph):
     # go home
     go_home_0 = graph.structure.add_node()
     graph.structure.add_edge(back_off_0, go_home_0, True)
-    graph.add_robot_pos_linear_eq(
-        k=go_home_0, robot_id=robot_id, A=np.eye(3), b=np.array([-0.5, 0.0, 0.5]))
+    graph.add_constraint(go_home_0, eq(q0, np.array([-0.5, 0.0, 0.5])))
 
     # grasp and release block 0 again
     approach_pick_up_1, pick_up_1 = add_grasp(block=0)
     graph.structure.add_edge(go_home_0, approach_pick_up_1, True)
     approach_release_1, release_1, back_off_1 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.30, 0.0, -0.23]), randomize=True)
-    grasp_phi_1 = graph.add_robot_holding_cube_constraint(pick_up_1, release_1, robot_id, 0, 0.30);
+    grasp_phi_1 = add_holding_box(pick_up_1, release_1, 0, 0.30)
 
     graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
 
@@ -147,30 +149,28 @@ def do_pick_and_place(graph):
     home = np.array([-0.5, 0.0, 0.5]) + home_offset
     print(f"SAMPLED FOR HOME: {home}")
 
-    graph.add_robot_pos_linear_eq(
-        k=go_home_1, robot_id=robot_id, A=np.eye(3), b=home)
+    graph.add_constraint(go_home_1, eq(q0, home))
 
     # graph.make_node_unpassable(go_home_1)
     # graph.add_manual_backtrack_links(arrangedPhi0, [approach_pick_up_0, pick_up_0, release_0])
 
 
 def do_test_yaw(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
-
     graph.structure.add_nodes(3)
     graph.structure.add_edge(0, 1, True)
     graph.structure.add_edge(1, 2, True)
 
     triangle_origin = np.array([-0.5, 0.0, 0.5, 0.0])
+    q0 = graph.agent_q(0)
 
     goal_position_1 = triangle_origin + np.array([0.0, 0.1, 0.0, 0.0])
-    phi0 = graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+    phi0 = graph.add_constraint(0, eq(q0, goal_position_1))
 
     goal_position_2 = triangle_origin + np.array([0.0, -0.1, 0.0, 0.5])
-    phi1 = graph.add_robots_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
+    phi1 = graph.add_constraint(1, eq(q0, goal_position_2))
 
     home_position_1 = triangle_origin + np.array([0.0, 0.0, 0.1, -0.5])
-    phi2 = graph.add_robots_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
+    phi2 = graph.add_constraint(2, eq(q0, home_position_1))
 
 
 def do_yaw_track_above(graph):
@@ -187,9 +187,22 @@ def do_yaw_track_above(graph):
 
 
 def do_move_spam(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
     robot_id = 0
     grasp_distance_limit = 0.26
+
+    def add_holding_box(u, v, block, holding_distance_max):
+        # Symbolic equivalent of add_robot_holding_cube_constraint -- see the
+        # identical helper in do_pick_and_place for why. Only x, y, z are
+        # boxed (not yaw): add_robot_holding_cube_constraint always compares
+        # PoseFromRow/CubePosFromRow's leading 3 (position) components,
+        # regardless of the robot/object block's full dimension.
+        q = graph.agent_q(robot_id)
+        obj = graph.object_q(block)
+        dx, dy, dz = q[0] - obj[0], q[1] - obj[1], q[2] - obj[2]
+        d = holding_distance_max
+        return graph.add_edge_constraint(
+            u, v,
+            logical_and(dx <= d, dx >= -d, dy <= d, dy >= -d, dz <= d, dz >= -d))
 
     def add_grasp(block):
         approach, pick_up = graph.structure.add_nodes(2)
@@ -252,7 +265,7 @@ def do_move_spam(graph):
     approach_release_0, release_0, back_off_0 = add_release(held_block=0, position=np.array([-0.7, 0.0, 0.24, 0.0]))
     graph.structure.add_edge(pick_up_0, approach_release_0, True)
 
-    grasp_phi_0 = graph.add_robot_holding_cube_constraint(pick_up_0, approach_release_0, robot_id, 0, grasp_distance_limit);
+    grasp_phi_0 = add_holding_box(pick_up_0, approach_release_0, 0, grasp_distance_limit)
 
     graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
 
@@ -272,7 +285,7 @@ def do_move_spam(graph):
     approach_release_1, release_1, back_off_1 = add_release(held_block=0, position=np.array([-0.42, 0.0, 0.24, 0.0]), randomize=True)
     graph.structure.add_edge(pick_up_1, approach_release_1, True)
 
-    grasp_phi_1 = graph.add_robot_holding_cube_constraint(pick_up_1, release_1, robot_id, 0, grasp_distance_limit);
+    grasp_phi_1 = add_holding_box(pick_up_1, release_1, 0, grasp_distance_limit)
 
     graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
 
@@ -314,7 +327,7 @@ def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_de
     goc_mpc = GraphOfConstraintsMPC(graph, spline_spec,
                                     # for waypoint solver:
                                     waypoint_solver = WaypointSolver.kGurobi,
-                                    waypoint_objective = WaypointObjective.kL1 if needs_yaw else WaypointObjective.kSquaredDistance,
+                                    waypoint_objective = WaypointObjective.kAvgL1 if needs_yaw else WaypointObjective.kAvgL2,
                                     waypoint_enforce_rigidity = False,
                                     # for timing solver:
                                     time_delta_cutoff = time_delta_cutoff,

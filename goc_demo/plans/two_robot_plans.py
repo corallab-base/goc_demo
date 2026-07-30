@@ -8,6 +8,7 @@ from goc_mpc import (
 )
 
 from pydrake.math import eq
+from pydrake.symbolic import logical_and
 
 
 TIME_DELTA_CUTOFF = 0.3
@@ -15,48 +16,53 @@ PHI_TOLERANCE = 0.05
 
 
 def do_move_in_circles(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
-
     graph.structure.add_nodes(3)
     graph.structure.add_edge(0, 1, True)
     graph.structure.add_edge(1, 2, True)
 
     left_triangle_origin = np.array([-0.5, 0.0, 0.5])
     right_triangle_origin = np.array([-0.5, -0.7, 0.5])
+    q0, q1 = graph.agent_q(0), graph.agent_q(1)
 
-    goal_position_1 = np.concatenate([left_triangle_origin + np.array([0.0, 0.1, 0.0]),
-                                      right_triangle_origin + np.array([0.0, -0.1, 0.0])])
-    phi0 = graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), goal_position_1)
+    # Two separate add_constraint calls per node (one per robot), not one
+    # joint formula spanning both agent_q(0) and agent_q(1) -- mirrors
+    # object_handoff_experiment.py's n_handoff pattern: a formula mixing two
+    # agents' literal agent_q placeholders isn't resolvable to a single
+    # routing/ownership instance, while two single-agent phis at the same
+    # node are.
+    phi0 = graph.add_constraint(0, eq(q0, left_triangle_origin + np.array([0.0, 0.1, 0.0])))
+    graph.add_constraint(0, eq(q1, right_triangle_origin + np.array([0.0, -0.1, 0.0])))
 
-    goal_position_2 = np.concatenate([left_triangle_origin + np.array([0.0, -0.1, 0.0]),
-                                      right_triangle_origin + np.array([0.0, 0.1, 0.0])])
-    phi1 = graph.add_robots_linear_eq(1, np.eye(joint_agent_dim), goal_position_2)
+    phi1 = graph.add_constraint(1, eq(q0, left_triangle_origin + np.array([0.0, -0.1, 0.0])))
+    graph.add_constraint(1, eq(q1, right_triangle_origin + np.array([0.0, 0.1, 0.0])))
 
-    home_position_1 = np.concatenate([left_triangle_origin + np.array([0.0, 0.0, 0.1]),
-                                      right_triangle_origin + np.array([0.0, 0.0, 0.1])])
-    phi2 = graph.add_robots_linear_eq(2, np.eye(joint_agent_dim), home_position_1)
+    phi2 = graph.add_constraint(2, eq(q0, left_triangle_origin + np.array([0.0, 0.0, 0.1])))
+    graph.add_constraint(2, eq(q1, right_triangle_origin + np.array([0.0, 0.0, 0.1])))
 
 
 def do_track_above(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
-
     graph.structure.add_nodes(3)
     graph.structure.add_edge(0, 1, True)
     graph.structure.add_edge(0, 2, True)
 
-    home_position_1 = np.array([-0.5, 0.0, 0.5, -0.5, -0.7, 0.5])
-    phi0 = graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
+    q0, q1 = graph.agent_q(0), graph.agent_q(1)
 
-    phi1 = graph.add_robot_above_cube_constraint(1, 0, 0, 0.2)
+    # add_robot_above_cube_constraint(k, robot_id, cube_id, delta_z, x_offset=0,
+    # y_offset=0) is eq(agent_q(robot_id), object_q(cube_id) + [x_offset,
+    # y_offset, delta_z]) for a point-mass robot (PoseFromRow's kPointMass
+    # case is the identity -- no forward kinematics involved for the
+    # "point_mass_{0,1}" robots this demo uses).
+    phi0 = graph.add_constraint(0, eq(q0, np.array([-0.5, 0.0, 0.5])))
+    graph.add_constraint(0, eq(q1, np.array([-0.5, -0.7, 0.5])))
+
+    phi1 = graph.add_constraint(1, eq(q0, graph.object_q(0) + np.array([0.0, 0.0, 0.2])))
     graph.make_node_unpassable(1)
 
-    phi3 = graph.add_robot_above_cube_constraint(2, 1, 1, 0.2)
+    phi3 = graph.add_constraint(2, eq(q1, graph.object_q(1) + np.array([0.0, 0.0, 0.2])))
     graph.make_node_unpassable(2)
 
 
 def do_dynamic_track_above(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
-
     graph.structure.add_nodes(3)
     graph.structure.add_edge(0, 1, True)
     graph.structure.add_edge(0, 2, True)
@@ -65,52 +71,58 @@ def do_dynamic_track_above(graph):
     r2 = graph.add_variable()
     graph.add_variable_ineq_constraint(r1, r2)
 
-    home_position_1 = np.array([-0.5, 0.0, 0.5, -0.5, -0.7, 0.5])
-    phi0 = graph.add_robots_linear_eq(0, np.eye(joint_agent_dim), home_position_1)
+    q0, q1 = graph.agent_q(0), graph.agent_q(1)
+    phi0 = graph.add_constraint(0, eq(q0, np.array([-0.5, 0.0, 0.5])))
+    graph.add_constraint(0, eq(q1, np.array([-0.5, -0.7, 0.5])))
 
-    phi1 = graph.add_assignable_robot_to_point_displacement_constraint(
-        1, r1, 0, np.array([0.0, 0.0, -0.24]))
+    q_r1, q_r2 = graph.var_agent_q(r1), graph.var_agent_q(r2)
+    phi1 = graph.add_constraint(1, eq(q_r1, graph.object_q(0) + np.array([0.0, 0.0, -0.24])))
     graph.make_node_unpassable(1)
 
-    phi2 = graph.add_assignable_robot_to_point_displacement_constraint(
-        2, r2, 1, np.array([0.0, 0.0, -0.24]))
+    phi2 = graph.add_constraint(2, eq(q_r2, graph.object_q(1) + np.array([0.0, 0.0, -0.24])))
     graph.make_node_unpassable(2)
 
 
 def do_block_arranging(graph):
-    joint_agent_dim = graph.num_agents * graph.dim;
-
     r1 = graph.add_variable()
     r2 = graph.add_variable()
     graph.add_variable_ineq_constraint(r1, r2)
+
+    def add_point_to_point_box(u, v, point_a, point_b, disp, tol):
+        # Symbolic equivalent of add_edge_point_to_point_displacement_constraint:
+        # a plain (non-u_/v_) formula built from object_q placeholders alone
+        # compiles to an "along the edge" constraint (applied independently at
+        # both endpoints and any interior node -- see add_edge_constraint /
+        # SymbolicEdgeConstraint::along_edge in graph_of_constraints.{hpp,cpp}),
+        # which is exactly the per-axis |Δ - disp| <= tol box the legacy helper
+        # evaluates. Unlike that helper (whose solve-time builder is a no-op --
+        # it only ever contributes a *runtime* backtrack-trigger check), this
+        # box is genuinely enforced during planning too.
+        pa, pb = graph.object_q(point_a), graph.object_q(point_b)
+        dx, dy, dz = (pb[0] - pa[0]) - disp[0], (pb[1] - pa[1]) - disp[1], (pb[2] - pa[2]) - disp[2]
+        return graph.add_edge_constraint(
+            u, v,
+            logical_and(dx <= tol[0], dx >= -tol[0],
+                        dy <= tol[1], dy >= -tol[1],
+                        dz <= tol[2], dz >= -tol[2]))
 
     def add_grasp(robot, block):
         approach, pick_up = graph.structure.add_nodes(2)
         graph.structure.add_edge(approach, pick_up, True)
 
-        graph.add_assignable_robot_to_point_displacement_constraint(approach, robot, block, np.array([0.0, 0.0, -0.35]));
+        q_robot = graph.var_agent_q(robot)
+        graph.add_constraint(approach, eq(q_robot, graph.object_q(block) + np.array([0.0, 0.0, -0.35])))
 
-        # aligned_phi = graph.add_edge_assignable_robot_to_point_displacement_constraint(
-        #     u=approach, v=pick_up, var=robot, point_id=block,
-        #     disp=np.array([0.0, 0.0, -0.25]),
-        #     tol=np.array([0.15, 0.15, 1.0]))
-
-        phi = graph.add_assignable_robot_to_point_displacement_constraint(pick_up, robot, block, np.array([0.0, 0.0, -0.19]));
+        phi = graph.add_constraint(pick_up, eq(q_robot, graph.object_q(block) + np.array([0.0, 0.0, -0.20])))
         graph.add_assignable_grasp_change(phi, "grab", block);
 
         return approach, pick_up
 
     def add_release(robot, held_block, relative_to_block, displacement):
-        # approach, release = graph.structure.add_nodes(2)
         release = graph.structure.add_node()
-        # graph.structure.add_edge(approach, release, True)
 
-        # graph.add_assignable_robot_to_point_displacement_constraint(approach, robot, block, np.array([0.0, 0.0, -0.2]))
-
-        # keep holding between approach and putting down
-        # graph.add_assignable_robot_holding_point_constraint(approach, release, robot, block, 0.2)
-
-        phi = graph.add_assignable_robot_to_point_displacement_constraint(release, robot, relative_to_block, displacement)
+        phi = graph.add_constraint(
+            release, eq(graph.var_agent_q(robot), graph.object_q(relative_to_block) + displacement))
         graph.add_assignable_grasp_change(phi, "release", held_block)
 
         return None, release
@@ -118,14 +130,27 @@ def do_block_arranging(graph):
     # grasp and release block 0
     approach_pick_up_0, pick_up_0 = add_grasp(r1, block=0)
     _, release_0 = add_release(r1, held_block=0, relative_to_block=1, displacement=np.array([-0.10, -0.15, -0.21]))
-    # grasp_phi_0 = graph.add_assignable_robot_holding_point_constraint(pick_up_0, release_0, r1, 0, 0.2);
+    # NOTE: not rewritten -- add_assignable_robot_holding_point_constraint is a
+    # real gap in the symbolic API, not a style difference. It's the assignable
+    # counterpart of the "rigid transport edge" pattern in
+    # object_grasp_experiment.py (eq(v_obj - u_obj, v_q - u_q), live=True) --
+    # but that pattern needs u_/v_-relational placeholders for the specific
+    # agent on each side of the edge, and the assignable machinery only
+    # exposes a single non-relational var_agent_q(var) (add_edge_constraint
+    # always compiles a var_agent_q formula as "along the edge" -- an
+    # independent per-node check -- never as a u-vs-v relation). Expressing
+    # "whichever robot is assigned to r1, its edge displacement must rigidly
+    # match the object's" needs u_var_agent_q(var)/v_var_agent_q(var)
+    # placeholders that don't exist yet. Left as the legacy call.
+    grasp_phi_0 = graph.add_assignable_robot_holding_point_constraint(pick_up_0, release_0, r1, 0, 0.2);
 
     graph.structure.add_edge(pick_up_0, release_0, True)
 
     # grasp and release block 2
     approach_pick_up_2, pick_up_2 = add_grasp(r2, block=2)
     _, release_2 = add_release(r2, held_block=2, relative_to_block=1, displacement=np.array([0.10, 0.15, -0.21]))
-    # grasp_phi_1 = graph.add_assignable_robot_holding_point_constraint(pick_up_2, release_2, r2, 2, 0.2);
+    # NOTE: not rewritten -- same gap as grasp_phi_0 above.
+    grasp_phi_1 = graph.add_assignable_robot_holding_point_constraint(pick_up_2, release_2, r2, 2, 0.2);
 
     graph.structure.add_edge(pick_up_2, release_2, True)
 
@@ -138,31 +163,29 @@ def do_block_arranging(graph):
     left_end = graph.structure.add_node()
     graph.structure.add_edge(release_0, left_end, True) # TODO: ADD CONDITIONS
     graph.structure.add_edge(release_2, left_end, True) # TODO: ADD CONDITIONS
-    phi4 = graph.add_robot_pos_linear_eq(
-        k=left_end, robot_id=0, A=np.eye(3), b=np.array([-0.5, 0.0, 0.5]));
+    phi4 = graph.add_constraint(left_end, eq(graph.agent_q(0), np.array([-0.5, 0.0, 0.5])))
 
     right_end = graph.structure.add_node()
     graph.structure.add_edge(release_0, right_end, True) # TODO: ADD CONDITIONS
     graph.structure.add_edge(release_2, right_end, True) # TODO: ADD CONDITIONS
-    phi5 = graph.add_robot_pos_linear_eq(
-        k=right_end, robot_id=1, A=np.eye(3), b=np.array([-0.5, -0.7, 0.5]));
+    phi5 = graph.add_constraint(right_end, eq(graph.agent_q(1), np.array([-0.5, -0.7, 0.5])))
 
     # when the 0 stacked on 1 edge constraint is violated here, back track all the way to node 0
-    arrangedPhi0 = graph.add_edge_point_to_point_displacement_constraint(
-        u=release_0, v=left_end, point_a=0, point_b=1,
+    arrangedPhi0 = add_point_to_point_box(
+        release_0, left_end, point_a=0, point_b=1,
         disp=np.array([-0.10, -0.15, 0.0]),
         tol=np.array([0.25, 0.25, 0.5]))
     print("arrangedPhi0: ", arrangedPhi0)
-    arrangedPhi1 = graph.add_edge_point_to_point_displacement_constraint(
-        u=release_2, v=left_end, point_a=0, point_b=1,
+    arrangedPhi1 = add_point_to_point_box(
+        release_2, left_end, point_a=0, point_b=1,
         disp=np.array([-0.10, -0.15, 0.0]),
         tol=np.array([0.25, 0.25, 0.5]))
     print("arrangedPhi1: ", arrangedPhi1)
     graph.add_manual_backtrack_links(arrangedPhi0, [approach_pick_up_0, pick_up_0, release_0])
 
     # when the 2 stacked on 0 edge constraint is violated here, back track all the way to node 2
-    arrangedPhi2 = graph.add_edge_point_to_point_displacement_constraint(
-        u=release_2, v=right_end, point_a=2, point_b=0,
+    arrangedPhi2 = add_point_to_point_box(
+        release_2, right_end, point_a=2, point_b=0,
         disp=np.array([0.10, 0.15, 0.0]),
         tol=np.array([0.25, 0.25, 0.5]))
     print("arrangedPhi2: ", arrangedPhi2)
@@ -504,7 +527,7 @@ def common_builder(n_points, graph_builder, phi_tolerance=PHI_TOLERANCE, time_de
     goc_mpc = GraphOfConstraintsMPC(graph, spline_spec,
                                     # for waypoint solver:
                                     waypoint_solver = WaypointSolver.kGurobi,
-                                    waypoint_objective = WaypointObjective.kSquaredDistance,
+                                    waypoint_objective = WaypointObjective.kAvgL2,
                                     waypoint_enforce_rigidity = False,
                                     # for timing solver:
                                     time_delta_cutoff = time_delta_cutoff,
