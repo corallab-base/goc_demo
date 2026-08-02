@@ -76,10 +76,10 @@ def do_dynamic_track_above(graph):
     graph.add_constraint(0, eq(q1, np.array([-0.5, -0.7, 0.5])))
 
     q_r1, q_r2 = graph.var_agent_q(r1), graph.var_agent_q(r2)
-    phi1 = graph.add_constraint(1, eq(q_r1, graph.object_q(0) + np.array([0.0, 0.0, -0.24])))
+    phi1 = graph.add_constraint(1, eq(q_r1, graph.object_q(0) + np.array([0.0, 0.0, 0.24])))
     graph.make_node_unpassable(1)
 
-    phi2 = graph.add_constraint(2, eq(q_r2, graph.object_q(1) + np.array([0.0, 0.0, -0.24])))
+    phi2 = graph.add_constraint(2, eq(q_r2, graph.object_q(1) + np.array([0.0, 0.0, 0.24])))
     graph.make_node_unpassable(2)
 
 

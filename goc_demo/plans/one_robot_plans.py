@@ -40,9 +40,9 @@ def do_pick_and_place(graph):
         approach, pick_up = graph.structure.add_nodes(2)
         graph.structure.add_edge(approach, pick_up, True)
 
-        graph.add_constraint(approach, eq(q0, graph.object_q(block) + np.array([0.0, 0.0, -0.35])))
+        graph.add_constraint(approach, eq(q0, graph.object_q(block) + np.array([0.0, 0.0, 0.35])))
 
-        phi = graph.add_constraint(pick_up, eq(q0, graph.object_q(block) + np.array([0.02, 0.0, -0.17])))
+        phi = graph.add_constraint(pick_up, eq(q0, graph.object_q(block) + np.array([0.02, 0.0, 0.17])))
         graph.add_grasp_change(phi, "grab", robot_id, block);
 
         return approach, pick_up
@@ -58,12 +58,12 @@ def do_pick_and_place(graph):
             print(f"SAMPLED FOR INIT: {displacement}")
 
         obj = graph.object_q(relative_to_block)
-        graph.add_constraint(approach, eq(q0, obj + displacement + np.array([0.0, 0.0, -0.15])))
+        graph.add_constraint(approach, eq(q0, obj + displacement + np.array([0.0, 0.0, 0.15])))
 
         phi = graph.add_constraint(release, eq(q0, obj + displacement))
         graph.add_grasp_change(phi, "release", robot_id, held_block)
 
-        graph.add_constraint(back_off, eq(q0, obj + displacement + np.array([0.0, 0.0, -0.15])))
+        graph.add_constraint(back_off, eq(q0, obj + displacement + np.array([0.0, 0.0, 0.15])))
 
         return approach, release, back_off
 
