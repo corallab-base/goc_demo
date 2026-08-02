@@ -106,32 +106,6 @@ def do_block_arranging(graph):
                         dy <= tol[1], dy >= -tol[1],
                         dz <= tol[2], dz >= -tol[2]))
 
-    def add_holding_constraint(u, v, robot_var, held_block, tol):
-        # Replaces the now-unbound add_assignable_robot_holding_point_constraint
-        # (removed from the Python bindings -- goc_mpc.cpp no longer exposes
-        # it, only the unified symbolic API). Same "along the edge" trick as
-        # add_point_to_point_box above: a plain (non-u_/v_) formula built from
-        # var_agent_q(robot_var)/object_q(held_block) compiles to an
-        # independent per-node check at both endpoints (and any interior
-        # node), rather than a single relation coupling them -- there is
-        # still no u_var_agent_q/v_var_agent_q relational placeholder for the
-        # assignable-agent case, so the true "rigid transport" relation isn't
-        # expressible here. This only checks that the held block stays within
-        # `tol` of whichever robot ends up assigned to robot_var at the nodes
-        # where it's evaluated; actual rigidity during transport is enforced
-        # by the simulator's magic-grasp, so this is a planning-side sanity
-        # check rather than the sole source of correctness.
-        q_robot = graph.var_agent_q(robot_var)
-        p_block = graph.object_q(held_block)
-        dx = p_block[0] - q_robot[0]
-        dy = p_block[1] - q_robot[1]
-        dz = p_block[2] - q_robot[2]
-        return graph.add_edge_constraint(
-            u, v,
-            logical_and(dx <= tol[0], dx >= -tol[0],
-                        dy <= tol[1], dy >= -tol[1],
-                        dz <= tol[2], dz >= -tol[2]))
-
     def add_grasp(robot, block):
         approach, pick_up = graph.structure.add_nodes(2)
         graph.structure.add_edge(approach, pick_up, True)
@@ -156,14 +130,22 @@ def do_block_arranging(graph):
     # grasp and release block 0
     approach_pick_up_0, pick_up_0 = add_grasp(r1, block=0)
     _, release_0 = add_release(r1, held_block=0, relative_to_block=1, displacement=np.array([-0.10, -0.15, -0.21]))
-    grasp_phi_0 = add_holding_constraint(pick_up_0, release_0, r1, 0, tol=np.array([0.05, 0.05, 0.25]))
+    # Canonical assignable-hold declaration: block 0 is rigidly carried by
+    # whichever real robot ends up assigned to r1, from pick-up to release
+    # (exact rigid-carry, resolved dynamically off r1's u_var_agent_q/
+    # v_var_agent_q -- see GraphOrderingSpec._resolve_holds in goc-mpc's
+    # spec.py). Also frees block 0 from the default "stationary unless
+    # held" constraint over exactly that span. Supersedes the old hand-
+    # rolled proximity-box check (there was no u_/v_var_agent_q placeholder
+    # to express true rigidity through when this plan was first written).
+    graph.add_assignable_hold(pick_up_0, release_0, r1, [0])
 
     graph.structure.add_edge(pick_up_0, release_0, True)
 
     # grasp and release block 2
     approach_pick_up_2, pick_up_2 = add_grasp(r2, block=2)
     _, release_2 = add_release(r2, held_block=2, relative_to_block=1, displacement=np.array([0.10, 0.15, -0.21]))
-    grasp_phi_1 = add_holding_constraint(pick_up_2, release_2, r2, 2, tol=np.array([0.05, 0.05, 0.25]))
+    graph.add_assignable_hold(pick_up_2, release_2, r2, [2])
 
     graph.structure.add_edge(pick_up_2, release_2, True)
 

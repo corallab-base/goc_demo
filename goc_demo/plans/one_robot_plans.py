@@ -8,7 +8,6 @@ from goc_mpc import (
 )
 
 from pydrake.math import eq
-from pydrake.symbolic import logical_and
 
 
 TIME_DELTA_CUTOFF = 0.3
@@ -36,20 +35,6 @@ def do_move_in_circles(graph):
 def do_pick_and_place(graph):
     robot_id = 0
     q0 = graph.agent_q(robot_id)
-
-    def add_holding_box(u, v, block, holding_distance_max):
-        # Symbolic equivalent of add_robot_holding_cube_constraint(u, v, robot_id,
-        # block, holding_distance_max): that helper compiles to an axis-aligned
-        # |dx|,|dy|,|dz| <= holding_distance_max box applied independently at both
-        # endpoints AND any interior node scheduled between them (see
-        # AddBoxProximityConstraint in graph_of_constraints.cpp) -- exactly what a
-        # plain (non-u_/v_) "along the edge" formula does here.
-        obj = graph.object_q(block)
-        dx, dy, dz = q0[0] - obj[0], q0[1] - obj[1], q0[2] - obj[2]
-        d = holding_distance_max
-        return graph.add_edge_constraint(
-            u, v,
-            logical_and(dx <= d, dx >= -d, dy <= d, dy >= -d, dz <= d, dz >= -d))
 
     def add_grasp(block):
         approach, pick_up = graph.structure.add_nodes(2)
@@ -85,9 +70,16 @@ def do_pick_and_place(graph):
     # grasp and release block 0
     approach_pick_up_0, pick_up_0 = add_grasp(block=0)
     approach_release_0, release_0, back_off_0 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.10, 0.0, -0.24]))
-    grasp_phi_0 = add_holding_box(pick_up_0, approach_release_0, 0, 0.30)
-
-    graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
+    # Canonical hold declaration: block 0 is rigidly carried by the robot
+    # from pick-up to release (MILPWaypointMPC's Constraint 14 derives the
+    # exact rigid-carry from this and frees block 0 from the default
+    # "stationary unless held" constraint over exactly that span). It also
+    # doubles as the runtime backtrack trigger: GraphOfConstraintsMPC.
+    # _backtrack checks every in-progress hold (graph.get_current_holds)
+    # against hold_drift_tolerance each cycle and reopens pick_up_0 if the
+    # robot drifts too far from block 0 (e.g. a grasp slip) -- no separate
+    # proximity edge constraint needed for that anymore.
+    graph.add_hold(pick_up_0, release_0, robot_id, [0])
 
     graph.structure.add_edge(pick_up_0, approach_release_0, True)
 
@@ -100,9 +92,8 @@ def do_pick_and_place(graph):
     approach_pick_up_1, pick_up_1 = add_grasp(block=0)
     graph.structure.add_edge(go_home_0, approach_pick_up_1, True)
     approach_release_1, release_1, back_off_1 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.30, 0.0, -0.23]), randomize=True)
-    grasp_phi_1 = add_holding_box(pick_up_1, release_1, 0, 0.30)
-
-    graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
+    # See the block-0 hold declaration above.
+    graph.add_hold(pick_up_1, release_1, robot_id, [0])
 
     graph.structure.add_edge(pick_up_1, approach_release_1, True)
 
@@ -120,9 +111,8 @@ def do_pick_and_place(graph):
     # grasp and release block 0
     approach_pick_up_0, pick_up_0 = add_grasp(block=0)
     approach_release_0, release_0, back_off_0 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.10, 0.0, -0.24]))
-    grasp_phi_0 = add_holding_box(pick_up_0, approach_release_0, 0, 0.30)
-
-    graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
+    # See the block-0 hold declaration on the first grasp cycle above.
+    graph.add_hold(pick_up_0, release_0, robot_id, [0])
 
     graph.structure.add_edge(pick_up_0, approach_release_0, True)
 
@@ -135,9 +125,8 @@ def do_pick_and_place(graph):
     approach_pick_up_1, pick_up_1 = add_grasp(block=0)
     graph.structure.add_edge(go_home_0, approach_pick_up_1, True)
     approach_release_1, release_1, back_off_1 = add_release(held_block=0, relative_to_block=1, displacement=np.array([-0.30, 0.0, -0.23]), randomize=True)
-    grasp_phi_1 = add_holding_box(pick_up_1, release_1, 0, 0.30)
-
-    graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
+    # See the block-0 hold declaration above.
+    graph.add_hold(pick_up_1, release_1, robot_id, [0])
 
     graph.structure.add_edge(pick_up_1, approach_release_1, True)
 
@@ -151,8 +140,8 @@ def do_pick_and_place(graph):
 
     graph.add_constraint(go_home_1, eq(q0, home))
 
-    # graph.make_node_unpassable(go_home_1)
-    # graph.add_manual_backtrack_links(arrangedPhi0, [approach_pick_up_0, pick_up_0, release_0])
+    graph.make_node_unpassable(go_home_1)
+    graph.add_manual_backtrack_links(arrangedPhi0, [approach_pick_up_0, pick_up_0, release_0])
 
 
 def do_test_yaw(graph):
@@ -188,21 +177,6 @@ def do_yaw_track_above(graph):
 
 def do_move_spam(graph):
     robot_id = 0
-    grasp_distance_limit = 0.26
-
-    def add_holding_box(u, v, block, holding_distance_max):
-        # Symbolic equivalent of add_robot_holding_cube_constraint -- see the
-        # identical helper in do_pick_and_place for why. Only x, y, z are
-        # boxed (not yaw): add_robot_holding_cube_constraint always compares
-        # PoseFromRow/CubePosFromRow's leading 3 (position) components,
-        # regardless of the robot/object block's full dimension.
-        q = graph.agent_q(robot_id)
-        obj = graph.object_q(block)
-        dx, dy, dz = q[0] - obj[0], q[1] - obj[1], q[2] - obj[2]
-        d = holding_distance_max
-        return graph.add_edge_constraint(
-            u, v,
-            logical_and(dx <= d, dx >= -d, dy <= d, dy >= -d, dz <= d, dz >= -d))
 
     def add_grasp(block):
         approach, pick_up = graph.structure.add_nodes(2)
@@ -265,10 +239,11 @@ def do_move_spam(graph):
     approach_release_0, release_0, back_off_0 = add_release(held_block=0, position=np.array([-0.7, 0.0, 0.24, 0.0]))
     graph.structure.add_edge(pick_up_0, approach_release_0, True)
 
-    grasp_phi_0 = add_holding_box(pick_up_0, approach_release_0, 0, grasp_distance_limit)
-
-    graph.add_manual_backtrack_links(grasp_phi_0, [approach_pick_up_0, pick_up_0])
-
+    # Canonical hold declaration -- see do_pick_and_place's for the full
+    # rationale (planning-time rigid-carry via MILPWaypointMPC's Constraint
+    # 14, plus the runtime drift/backtrack check via GraphOfConstraintsMPC.
+    # get_current_holds / hold_drift_tolerance).
+    graph.add_hold(pick_up_0, release_0, robot_id, [0])
 
     # go home
     go_home_0 = graph.structure.add_node()
@@ -285,9 +260,7 @@ def do_move_spam(graph):
     approach_release_1, release_1, back_off_1 = add_release(held_block=0, position=np.array([-0.42, 0.0, 0.24, 0.0]), randomize=True)
     graph.structure.add_edge(pick_up_1, approach_release_1, True)
 
-    grasp_phi_1 = add_holding_box(pick_up_1, release_1, 0, grasp_distance_limit)
-
-    graph.add_manual_backtrack_links(grasp_phi_1, [approach_pick_up_1, pick_up_1])
+    graph.add_hold(pick_up_1, release_1, robot_id, [0])
 
     # go home again
     go_home_1 = graph.structure.add_node()
