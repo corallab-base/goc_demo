@@ -127,7 +127,7 @@ class GocMpcCartesianNode(Node):
         )
 
         # instatiate real grippers (not the cleanest, but has to be done)
-        left_ip_address = "10.168.4.229"
+        left_ip_address = "10.168.4.246"
         self._left_real_gripper = robotiq.RobotiqGripper(disabled=False)
         self._left_real_gripper.connect(left_ip_address, 63352)
         self._left_real_gripper.activate(auto_calibrate=False)
@@ -481,11 +481,11 @@ class GocMpcCartesianNode(Node):
 
         # SHORT SPLINE VISUALIZATION
 
-        # self._publish_paths(
-        #     self._left_short_path_publisher, xi_h[:, 0],
-        #     self._right_short_path_publisher, xi_h[:, 1],
-        #     pos_only=True,
-        # )
+        self._publish_paths(
+            self._left_short_path_publisher, xi_h[:, 0],
+            self._right_short_path_publisher, xi_h[:, 1],
+            pos_only=True,
+        )
 
         # LOGGING
 
@@ -500,8 +500,8 @@ class GocMpcCartesianNode(Node):
         #                            EXECUTE ACTION                           #
         #######################################################################
 
-        left_target_pose = xi_h[3, 0]
-        right_target_pose = xi_h[3, 1]
+        left_target_pose = xi_h[5, 0]
+        right_target_pose = xi_h[5, 1]
 
         left_target_pose_stamped = PoseStamped()
         left_target_pose_stamped.header.frame_id = WORLD_FRAME

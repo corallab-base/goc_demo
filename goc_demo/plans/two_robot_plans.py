@@ -10,7 +10,7 @@ from goc_mpc import (
 from pydrake.math import eq
 
 
-TIME_DELTA_CUTOFF = 0.33
+TIME_DELTA_CUTOFF = 0.36
 PHI_TOLERANCE = 0.05
 
 
